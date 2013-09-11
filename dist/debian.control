@@ -1,0 +1,14 @@
+Source: libbssolv-perl
+Section: perl
+Priority: optional
+Build-Depends: debhelper (>= 7), perl (>= 5.6.10-12), cmake, libexpat1-dev, libz-dev, liblzma-dev, librpm-dev
+Maintainer: Stephan Kulow <mls@suse.de>
+Standards-Version: 3.8.0
+
+Package: libbssolv-perl
+Architecture: any
+Depends: ${perl:Depends}
+Description: Using a Satisfyability Solver to compute package dependencies.
+ Fancy stuff
+
+

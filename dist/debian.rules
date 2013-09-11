@@ -1,0 +1,29 @@
+#!/usr/bin/make -f
+
+build: build-stamp
+build-stamp:
+	ln -s . libsolv
+	cmake -DFEDORA=1 -DDISABLE_SHARED=1 -DCMAKE_BUILD_TYPE=Release -DCMAKE_SKIP_RPATH=1 -DENABLE_RPMDB=1 -DENABLE_DEBIAN=1 -DENABLE_ARCHREPO=1 -DENABLE_LZMA_COMPRESSION=1 -DMULTI_SEMANTICS=1 -DCMAKE_INSTALL_PREFIX=/usr
+	make
+	perl Makefile.PL
+	make
+	touch $@
+
+clean:
+	dh $@
+
+install: install-stamp
+install-stamp: build-stamp
+	dh install
+	touch $@
+
+binary-arch: install
+	dh $@
+
+binary-indep:
+
+binary: binary-arch binary-indep
+
+.PHONY: binary binary-arch binary-indep install clean build
+
+

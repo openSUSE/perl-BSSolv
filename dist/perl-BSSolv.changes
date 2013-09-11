@@ -1,0 +1,190 @@
+-------------------------------------------------------------------
+Wed Feb  6 15:42:59 CET 2013 - mls@suse.de
+
+- update to libsolv-0.2.4
+
+-------------------------------------------------------------------
+Wed Nov 14 14:18:55 CET 2012 - mls@suse.de
+
+- update BSSolv.xs to get debugstr support
+
+-------------------------------------------------------------------
+Tue Nov 13 17:56:54 CET 2012 - mls@suse.de
+
+- support 'ignoreconflicts' expandflag
+
+-------------------------------------------------------------------
+Tue Nov 13 12:11:54 CET 2012 - mls@suse.de
+
+- use REPO_NO_LOCATION
+
+-------------------------------------------------------------------
+Mon Nov 12 14:58:14 CET 2012 - mls@suse.de
+
+- update libsolv to current version to fix deb parsing
+- bump repocookie
+
+-------------------------------------------------------------------
+Mon Oct 15 17:46:37 CEST 2012 - mls@suse.de
+
+- update libsolv and BSSolv.xs to current version
+  * export all dependencies
+  * obey package conflicts when expanding
+
+-------------------------------------------------------------------
+Fri Apr 27 14:40:10 CEST 2012 - mls@suse.de
+
+- update BSSolv.xs so that the worker caches binaries again
+
+-------------------------------------------------------------------
+Wed Apr 25 16:11:09 CEST 2012 - mls@suse.de
+
+- bump version to 0.18.2
+- update to libsolv-0.1.0 to fix opensuse 11.4 builds
+
+-------------------------------------------------------------------
+Wed Apr  4 14:58:11 CEST 2012 - mls@suse.de
+
+- bump version to 0.18.1
+- update to current libsolv
+- enable arch linux support
+
+-------------------------------------------------------------------
+Wed Nov 30 14:44:14 UTC 2011 - adrian@suse.de
+
+- bump version to 0.18.0
+- base package on libsolv tar ball
+
+-------------------------------------------------------------------
+Wed Nov 30 13:20:12 CET 2011 - mls@suse.de
+
+- update BSSolv.xs:
+  * fix prefer order handling bug
+  * add repo->tofile_fd
+
+-------------------------------------------------------------------
+Wed Nov 16 14:55:55 CET 2011 - mls@suse.de
+
+- fix debian control file extraction, thanks djszapi!
+
+-------------------------------------------------------------------
+Thu Aug 25 12:49:06 CEST 2011 - mls@suse.de
+
+- fix debian dependency compare function
+
+-------------------------------------------------------------------
+Tue Jun 28 18:55:12 UTC 2011 - coolo@novell.com
+
+- add requires to correct perl version
+
+-------------------------------------------------------------------
+Tue Feb 15 13:49:35 CET 2011 - mls@suse.de
+
+- define USE_OWN_QSORT instead of using glib
+
+-------------------------------------------------------------------
+Mon Feb 14 16:44:24 UTC 2011 - adrian@suse.de
+
+- update to 0.16.4
+
+-------------------------------------------------------------------
+Thu Dec  9 10:06:40 UTC 2010 - adrian@suse.de
+
+- update to 0.16.2
+- fix build for Factory
+
+-------------------------------------------------------------------
+Fri Oct 29 07:29:16 UTC 2010 - adrian@suse.de
+
+- follow the version of satsolver for this package
+
+-------------------------------------------------------------------
+Sat Oct 23 09:53:11 UTC 2010 - mrdocs@opensuse.org
+
+- fix the build with the correct source version
+
+-------------------------------------------------------------------
+Tue Oct 19 10:05:03 UTC 2010 - adrian@suse.de
+
+- adapt spec to version 0.16.0
+
+-------------------------------------------------------------------
+Fri Jul 23 13:13:27 UTC 2010 - adrian@suse.de
+
+- update BSSolv.xs from current build-service git repo
+
+-------------------------------------------------------------------
+Fri May 14 12:53:24 UTC 2010 - adrian@suse.de
+
+- adapt spec to version 0.15.0
+
+-------------------------------------------------------------------
+Wed Apr  7 17:17:37 CEST 2010 - mls@suse.de
+
+- adapt spec to version 0.14.17
+
+-------------------------------------------------------------------
+Mon Mar 15 14:20:51 UTC 2010 - chris@computersalat.de
+
+- fix spec
+  o new version 0.14.16 (zypp:Head)
+
+-------------------------------------------------------------------
+Tue Mar  2 12:48:19 UTC 2010 - chris@computersalat.de
+
+- hmm, cause of undocumented SOURCE changes
+  (satsolver-0.14.15 from zypp:Head),
+  util patch (SLES 10 fix) now obsolete
+  o hence removed
+
+-------------------------------------------------------------------
+Sun Feb 28 21:05:00 UTC 2010 - adrian@suse.de
+
+- fixed SLES 10 fix
+
+-------------------------------------------------------------------
+Mon Feb 22 22:59:44 UTC 2010 - chris@computersalat.de
+
+- fix spec
+  o new version 0.14.15 (zypp:Head)
+- reworked patch for SLE_10
+
+-------------------------------------------------------------------
+Fri Feb 12 21:26:07 UTC 2010 - chris@computersalat.de
+
+- spec mods
+  o added header
+  o fixed source version
+- fix build for SLE_10
+  o added satsolver-0.14.14-util.patch
+- BuildReq ruby-devel > 1.8.4
+  o /usr/bin/ruby: no such file to
+    load -- vendor-specific (LoadError)
+
+-------------------------------------------------------------------
+Mon Dec 21 17:26:47 CET 2009 - mls@suse.de
+
+- add dod changes
+- fix bug in debian dep parsing
+- add support for whatprovides/whatrequires
+
+-------------------------------------------------------------------
+Fri Oct 23 12:02:40 CEST 2009 - mls@suse.de
+
+- strip trailing spaces in dep2id
+
+-------------------------------------------------------------------
+Wed Oct 21 11:11:52 CEST 2009 - mls@suse.de
+
+- add pkg2sizek
+
+-------------------------------------------------------------------
+Wed Oct  7 10:17:38 CEST 2009 - mls@suse.de
+
+- update BSSolv.xs
+
+-------------------------------------------------------------------
+Tue Oct  6 12:19:38 CEST 2009 - mls@suse.de
+
+- initial version
+

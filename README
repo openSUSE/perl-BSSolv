@@ -1,0 +1,10 @@
+
+This is a support perl module for the OBS backend. It contains functions for 
+repository management, dependency solving, package ordering, and meta file
+creation.
+
+Currently building expects the libsolv sources to be available in a 'libsolv'
+directory.
+
+It could be extended to use the system version of libsolv.
+

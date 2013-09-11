@@ -1,0 +1,12 @@
+libbssolv-perl (0.2.4-1) unstable; urgency=low
+
+  * update to libsolv-0.2.4
+
+ -- Michael Schroeder <mls@suse.de>  Wed, 6 Feb 2013 15:45:06 +0100
+
+libbssolv-perl (0.2.0-1) unstable; urgency=low
+
+  * Initial Release
+
+ -- Michael Schroeder <mls@suse.de>  Mon, 10 Oct 2011 19:30:22 +0200
+
