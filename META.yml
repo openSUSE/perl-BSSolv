@@ -1,0 +1,15 @@
+--- #YAML:1.0
+name: BSSolv
+version: 0.01
+abstract: Support perl module for the OBS backend
+license: perl
+author:
+  - Michael Schroeder, mls@suse.de
+provides:
+  BSSolv:
+    file: BSSolv.pm
+    version: 0.01
+meta-spec:
+  version: 1.3
+  url: http://module-build.sourceforge.net/META-spec-v1.3.html
+generated_by: Michael Schroeder

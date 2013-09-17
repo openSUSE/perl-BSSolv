@@ -102,7 +102,7 @@ cmake   $CMAKE_FLAGS \
 pushd src ; make ; popd
 pushd ext ; make ; popd
 popd
-perl Makefile.PL
+perl Makefile.PL --bundled-libsolv
 make
 
 %install
@@ -116,9 +116,6 @@ find $RPM_BUILD_ROOT -type f -name '*.bs' -a -size 0 -exec rm -f {} ';'
 find $RPM_BUILD_ROOT -depth -type d -exec rmdir {} 2>/dev/null \;  
 %{_fixperms} $RPM_BUILD_ROOT/*  
 %endif  
-
-%clean
-rm -rf $RPM_BUILD_ROOT
 
 %files
 %defattr(-,root,root)

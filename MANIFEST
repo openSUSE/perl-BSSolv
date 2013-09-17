@@ -1,0 +1,14 @@
+BSSolv.pm
+BSSolv.xs
+Makefile.PL
+MANIFEST
+META.yml
+README
+dist/debian.changelog
+dist/debian.compat
+dist/debian.control
+dist/debian.rules
+dist/perl-BSSolv.changes
+dist/perl-BSSolv.dsc
+dist/perl-BSSolv.spec
+typemap
