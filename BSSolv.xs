@@ -161,7 +161,15 @@ dep2id(Pool *pool, char *s)
   n = s;
   while (*s && *s != ' ' && *s != '\t' && *s != '<' && *s != '=' && *s != '>')
     s++;
-  id = pool_strn2id(pool, n, s - n, 1);
+#ifdef REL_MULTIARCH
+  if (s - n > 4 && s[-4] == ':' && !strncmp(s - 4, ":any", 4))
+    {
+      id = pool_strn2id(pool, n, s - n - 4, 1);
+      id = pool_rel2id(pool, id, ARCH_ANY, REL_MULTIARCH, 1);
+    }
+  else
+#endif
+    id = pool_strn2id(pool, n, s - n, 1);
   if (!*s)
     return id;
   while (*s == ' ' || *s == '\t')
