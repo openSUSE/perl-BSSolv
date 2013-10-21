@@ -383,7 +383,7 @@ expander_installed(Expander *xp, Id p, Map *installed, Map *conflicts, Queue *co
 	    }
 	  if (*n == '/')
 	    {
-	      if (!xp->havefileprovides || !pool->whatprovides[id])
+	      if (!xp->havefileprovides || pool->whatprovides[id] <= 1)
 		{
 		  MAPEXP(&xp->ignored, id);
 		  MAPSET(&xp->ignored, id);
