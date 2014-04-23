@@ -304,6 +304,119 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
     (void)hv_store(hv, key, keyl, newRV_noinc((SV*)av), 0);
 }
 
+static SV *
+retrieve(unsigned char **srcp, STRLEN *srclp, int depth)
+{
+  SV *sv, *rv;
+  AV *av;
+  HV *hv;
+  unsigned char *src = *srcp;
+  STRLEN srcl = *srclp;
+  int type;
+  unsigned int i, len;
+  STRLEN size;
+
+  if (depth > 10)
+    return 0;
+  if (srcl-- == 0)
+    return 0;
+  type = *src++;
+  switch (type)
+    {
+    case 1:
+      if (srcl < 4)
+	return 0;
+      size = src[0] << 24 | src[1] << 16 | src[2] << 8 | src[3];
+      srcl -= 4;
+      src += 4;
+      if (srcl < size)
+	return 0;
+      sv = NEWSV(10002, size);
+      sv_setpvn(sv, (char *)src, size);
+      srcl -= size;
+      src += size;
+      break;
+    case 2:
+      if (srcl < 4)
+	return 0;
+      len = src[0] << 24 | src[1] << 16 | src[2] << 8 | src[3];
+      srcl -= 4;
+      src += 4;
+      if (len > srcl)
+	return 0;
+      av = newAV();
+      if (len)
+	av_extend(av, len);
+      for (i = 0; i < len; i++)
+	{
+	  sv = retrieve(&src, &srcl, depth + 1);
+	  if (!sv)
+	    return 0;
+	  if (av_store(av, i, sv) == 0)
+	    return 0;
+	}
+      sv = (SV *)av;
+      break;
+    case 3:
+      if (srcl < 4)
+	return 0;
+      len = src[0] << 24 | src[1] << 16 | src[2] << 8 | src[3];
+      srcl -= 4;
+      src += 4;
+      if (len > srcl)
+	return 0;
+      hv = newHV();
+      if (len)
+	hv_ksplit(hv, len + 1);
+      for (i = 0; i < len; i++)
+	{
+	  sv = retrieve(&src, &srcl, depth + 1);
+	  if (!sv) 
+	    return 0;
+	  if (srcl < 4)
+	    return 0;
+	  size = src[0] << 24 | src[1] << 16 | src[2] << 8 | src[3];
+	  srcl -= 4;
+	  src += 4;
+	  if (srcl < size)
+	    return 0;
+          if (hv_store(hv, (char *)src, (U32)size, sv, 0) == 0)
+	    return 0;
+	  srcl -= size;
+	  src += size;
+	}
+      sv = (SV *)hv;
+      break;
+    case 4:
+      rv = NEWSV(10002, 0);
+      sv = retrieve(&src, &srcl, depth + 1);
+      if (!sv) 
+	return 0;
+      sv_upgrade(rv, SVt_RV);
+      SvRV_set(rv, sv);
+      SvROK_on(rv);
+      sv = rv;
+      break;
+    case 10:
+      if (srcl-- == 0)
+	return 0;
+      size = *src++;
+      if (srcl < size)
+	return 0;
+      sv = NEWSV(10002, size);
+      sv_setpvn(sv, (char *)src, size);
+      srcl -= size;
+      src += size;
+      break;
+    default:
+      /* fprintf(stderr, "unknown tag %d\n", type); */
+      return 0;
+    }
+  *srcp = src;
+  *srclp = srcl;
+  return sv;
+}
+
 static void
 expander_dbg(Expander *xp, const char *format, ...)
 {
@@ -1493,6 +1606,40 @@ gen_meta(AV *subp, ...)
 	      }
 	    solv_free(lines);
 	}
+
+SV *
+thawcache(SV *sv)
+    CODE:
+	unsigned char *src;
+	STRLEN srcl;
+	if (!SvPOK(sv)) {
+	    croak("thaw: argument is not a string\n");
+	    XSRETURN_UNDEF;
+	}
+	src = (unsigned char *)SvPV(sv, srcl);
+	if (srcl < 7 || src[0] != 'p' || src[1] != 's' || src[2] != 't' || src[3] != '0') {
+	    croak("thaw: argument is not a perl storable\n");
+	    XSRETURN_UNDEF;
+	}
+	if ((src[4] & 1) != 1) {
+	    croak("thaw: argument is not a perl storable in network order\n");
+	    XSRETURN_UNDEF;
+	}
+	if (src[4] < 5) {
+	    croak("thaw: argument is a perl storable with a too old version\n");
+	    XSRETURN_UNDEF;
+	}
+        src += 6;
+        srcl -= 6;
+	sv = retrieve(&src, &srcl, 0);
+	if (sv == 0 || srcl) {
+	    croak("thaw: corrupt storable\n");
+	    XSRETURN_UNDEF;
+	}
+	RETVAL = newRV_noinc(sv);
+    OUTPUT:
+	RETVAL
+
 
 MODULE = BSSolv		PACKAGE = BSSolv::pool		PREFIX = pool
 
