@@ -54,6 +54,7 @@ static Id buildservice_id;
 static Id buildservice_repocookie;
 static Id buildservice_external;
 static Id buildservice_dodurl;
+static Id expander_directdepsend;
 
 /* make sure bit n is usable */
 #define MAPEXP(m, n) ((m)->size < (((n) + 8) >> 3) ? map_grow(m, n + 256) : 0)
@@ -665,6 +666,13 @@ expander_expand(Expander *xp, Queue *in, Queue *out)
   for (i = 0; i < in->count; i++)
     {
       id = in->elements[i];
+      if (id == expander_directdepsend)
+	{
+	  for (i = i + 1; i < in->count; i++)
+	    if (in->elements[i] != expander_directdepsend)
+	      queue_push(&todo, in->elements[i]);
+	  break;
+	}
       q = 0;
       FOR_PROVIDES(p, pp, id)
 	{
@@ -1659,6 +1667,7 @@ new(char *packname = "BSSolv::pool")
 	    buildservice_repocookie= pool_str2id(pool, "buildservice:repocookie", 1);
 	    buildservice_external = pool_str2id(pool, "buildservice:external", 1);
 	    buildservice_dodurl = pool_str2id(pool, "buildservice:dodurl", 1);
+	    expander_directdepsend = pool_str2id(pool, "-directdepsend--", 1);
 	    pool_freeidhashes(pool);
 	    RETVAL = pool;
 	}
@@ -2579,6 +2588,11 @@ expand(BSSolv::expander xp, ...)
 		if (*s == '-')
 		  {
 		    Id id = pool_str2id(pool, s + 1, 1);
+		    if (id == expander_directdepsend)
+		      {
+			queue_push(&in, id);
+			continue;
+		      }
 		    MAPEXP(&xp->ignored, id);
 		    if (MAPTST(&xp->ignored, id))
 		      continue;
