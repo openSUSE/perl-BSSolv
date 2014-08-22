@@ -2601,7 +2601,7 @@ expand(BSSolv::expander xp, ...)
 		    if ((s = strchr(s + 1, ':')) != 0)
 		      {
 			id = pool_str2id(pool, s + 1, 1);
-			MAPEXP(&xp->ignored, id);
+			MAPEXP(&xp->ignoredx, id);
 			if (MAPTST(&xp->ignoredx, id))
 			  continue;
 			MAPSET(&xp->ignoredx, id);
