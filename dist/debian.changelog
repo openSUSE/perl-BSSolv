@@ -1,3 +1,15 @@
+libbssolv-perl (0.4.0-2) unstable; urgency=low
+
+  * update to git #a93b6ed8
+
+ -- Michael Schroeder <mls@suse.de>  Thu, 18 Sep 2014 18:08:58 +0200
+
+libbssolv-perl (0.4.0-1) unstable; urgency=low
+
+  * update to libsolv-0.4.0
+
+ -- Michael Schroeder <mls@suse.de>  Fri, 18 Oct 2013 12:08:58 +0200
+
 libbssolv-perl (0.2.4-1) unstable; urgency=low
 
   * update to libsolv-0.2.4
