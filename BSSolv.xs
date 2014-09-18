@@ -670,7 +670,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out)
 	{
 	  for (i = i + 1; i < in->count; i++)
 	    if (in->elements[i] != expander_directdepsend)
-	      queue_push(&todo, in->elements[i]);
+	      queue_push2(&todo, in->elements[i], 0);
 	  break;
 	}
       q = 0;
