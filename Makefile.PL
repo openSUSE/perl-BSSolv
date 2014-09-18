@@ -5,7 +5,7 @@ my $solvprefix = '/usr';
 my $inc = "-I$solvprefix/include/solv";
 my $lib = '';
 
-if (@ARGV && $ARGV[0] eq '--bundled-libsolv') {
+if (grep {$_ eq '--bundled-libsolv'} @ARGV) {
   my $builddir = 'libsolv';
   $inc = "-I$builddir/src -I$builddir/ext";
   $lib = "-L$builddir/src -L$builddir/ext";
