@@ -576,9 +576,9 @@ expander_updateconflictsinfo(Expander *xp, Queue *conflictsinfo, int *cidone, Qu
 {
   Pool *pool = xp->pool;
   int i;
-  if (xp->debug || xp->ignoreconflicts)
+  if (xp->ignoreconflicts)
     return;
-  for (i = 0; i < out->count; i++)
+  for (i = *cidone; i < out->count; i++)
     {
       Id p, p2, pp2;
       Id con, *conp;
@@ -698,7 +698,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out)
 	{
 	  queue_push(&errors, ERROR_CONFLICTINGPROVIDER);
 	  queue_push2(&errors, id, 0);
-	  if (!xp->debug && cidone < out->count)
+	  if (cidone < out->count)
 	    expander_updateconflictsinfo(xp, &conflictsinfo, &cidone, out);
 	  queue_push(&errors, ERROR_PROVIDERINFO2);
 	  queue_push2(&errors, q, findconflictsinfo(&conflictsinfo, q));
@@ -810,7 +810,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out)
 	      queue_push2(&errors, id, who);
 	      if (!conflprovpc)
 		{
-		  if (!xp->debug && cidone < out->count)
+		  if (cidone < out->count)
 		    expander_updateconflictsinfo(xp, &conflictsinfo, &cidone, out);
 		  conflprovpc = findconflictsinfo(&conflictsinfo, conflprov);
 		  queue_push(&errors, ERROR_PROVIDERINFO2);
@@ -826,7 +826,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out)
 	  /* even more work if all providers conflict */
 	  queue_push(&errors, ERROR_CONFLICTINGPROVIDERS);
 	  queue_push2(&errors, id, who);
-	  if (!xp->debug && cidone < out->count)
+	  if (cidone < out->count)
 	    expander_updateconflictsinfo(xp, &conflictsinfo, &cidone, out);
 	  FOR_PROVIDES(p, pp, id)
 	    {
