@@ -442,6 +442,19 @@ expander_dbg(Expander *xp, const char *format, ...)
   xp->debugstrf -= l;
 }
 
+static const char *
+expander_solvid2name(Expander *xp, Id p)
+{
+  const char *n = pool_id2str(xp->pool, xp->pool->solvables[p].name);
+  Repo *r; 
+  if (!xp->debug)
+    return n;
+  r = xp->pool->solvables[p].repo;
+  if (!r) 
+    return n;
+  return pool_tmpjoin(xp->pool, n, "@", r->name);
+}
+
 static inline void
 expander_installed(Expander *xp, Id p, Map *installed, Map *conflicts, Queue *conflictsinfo, int *cidone, Queue *out, Queue *todo)
 {
@@ -735,7 +748,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
 	  continue;
 	}
       if (xp->debug)
-	expander_dbg(xp, "added %s because of %s (direct dep)\n", pool_id2str(pool, pool->solvables[q].name), pool_dep2str(pool, id));
+	expander_dbg(xp, "added %s because of %s (direct dep)\n", expander_solvid2name(xp, q), pool_dep2str(pool, id));
       expander_installed(xp, q, &installed, &conflicts, &conflictsinfo, &cidone, out, &todo); /* unique match! */
     }
 
@@ -875,7 +888,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
 	    {
 	      expander_dbg(xp, "undecided about %s:%s:", whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
 	      for (i = 0; i < qq.count; i++)
-	        expander_dbg(xp, " %s", pool_id2str(pool, pool->solvables[qq.elements[i]].name));
+	        expander_dbg(xp, " %s", expander_solvid2name(xp, qq.elements[i]));
 	      expander_dbg(xp, "\n");
 	    }
 	  continue;
@@ -990,7 +1003,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
 	  continue;
 	}
       if (xp->debug)
-	expander_dbg(xp, "added %s because of %s:%s\n", pool_id2str(pool, pool->solvables[qq.elements[0]].name), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
+	expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, qq.elements[0]), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
       expander_installed(xp, qq.elements[0], &installed, &conflicts, &conflictsinfo, &cidone, out, &todo);
       doamb = 0;
       ambcnt = todo.count;
