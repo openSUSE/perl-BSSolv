@@ -40,6 +40,7 @@ typedef struct _Expander {
   int debug;
   int havefileprovides;
   int ignoreconflicts;
+  int ignoreignore;
 
   char *debugstr;
   int debugstrl;
@@ -493,13 +494,16 @@ expander_installed(Expander *xp, Id p, Map *installed, Map *conflicts, Queue *co
 	  if (req == SOLVABLE_PREREQMARKER)
 	    continue;
 	  id = id2name(pool, req);
-	  if (MAPTST(&xp->ignored, id))
-	    continue;
-	  if (MAPTST(&xp->ignoredx, id))
+	  if (!xp->ignoreignore)
 	    {
-	      Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, s->name), ":", pool_id2str(pool, id)), 0);
-	      if (xid && MAPTST(&xp->ignored, xid))
+	      if (MAPTST(&xp->ignored, id))
 		continue;
+	      if (MAPTST(&xp->ignoredx, id))
+		{
+		  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, s->name), ":", pool_id2str(pool, id)), 0);
+		  if (xid && MAPTST(&xp->ignored, xid))
+		    continue;
+		}
 	    }
 	  n = pool_id2str(pool, id);
 	  if (!strncmp(n, "rpmlib(", 7))
@@ -777,17 +781,20 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
       conflprovpc = 0;
       FOR_PROVIDES(p, pp, id)
 	{
-	  Id pn, pc;
+	  Id pc;
 	  if (MAPTST(&installed, p))
 	    break;
-	  pn = pool->solvables[p].name;
-	  if (who && MAPTST(&xp->ignored, pn))
-	    break;
-	  if (who && MAPTST(&xp->ignoredx, pn))
+	  if (who && !xp->ignoreignore)
 	    {
-	      Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
-	      if (xid && MAPTST(&xp->ignored, xid))
+	      Id pn = pool->solvables[p].name;
+	      if (MAPTST(&xp->ignored, pn))
 		break;
+	      if (MAPTST(&xp->ignoredx, pn))
+		{
+		  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
+		  if (xid && MAPTST(&xp->ignored, xid))
+		    break;
+		}
 	    }
 	  if (conflicts.size && MAPTST(&conflicts, p))
 	    {
@@ -2604,6 +2611,7 @@ expand(BSSolv::expander xp, ...)
 	    int i, nerrors;
 	    Id id, who, conflbuf[16];
 	    Queue revertignore, in, out, confl;
+	    int oldignoreignore = xp->ignoreignore;
 
 	    queue_init(&revertignore);
 	    queue_init(&in);
@@ -2615,7 +2623,12 @@ expand(BSSolv::expander xp, ...)
 		char *s = SvPV_nolen(ST(i));
 		if (*s == '-')
 		  {
-		    Id id = pool_str2id(pool, s + 1, 1);
+		    Id id;
+		    if (s[1] == '-' && !strcmp(s, "--ignoreignore--")) {
+		      xp->ignoreignore = 1;
+		      continue;
+		    }
+		    id = pool_str2id(pool, s + 1, 1);
 		    if (id == expander_directdepsend)
 		      {
 			queue_push(&in, id);
@@ -2659,6 +2672,7 @@ expand(BSSolv::expander xp, ...)
 	    nerrors = expander_expand(xp, &in, &out, &confl);
 
 	    /* revert ignores */
+	    xp->ignoreignore = oldignoreignore;
 	    for (i = 0; i < revertignore.count; i++)
 	      {
 		id = revertignore.elements[i];
