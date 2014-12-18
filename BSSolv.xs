@@ -1058,9 +1058,9 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
 	      else if (s->arch != sb->arch)
 		{
 		  int r;
-		  if (s->arch == ARCH_NOARCH || s->arch == ARCH_ALL)
+		  if (s->arch == ARCH_NOARCH || s->arch == ARCH_ALL || s->arch == ARCH_ANY)
 		    continue;
-		  if (sb->arch != ARCH_NOARCH && sb->arch != ARCH_ALL)
+		  if (sb->arch != ARCH_NOARCH && sb->arch != ARCH_ALL && sb->arch != ARCH_ANY)
 		    {
 		      r = strcmp(pool_id2str(pool, sb->arch), pool_id2str(pool, s->arch));
 		      if (r >= 0)
