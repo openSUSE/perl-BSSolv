@@ -636,7 +636,7 @@ findconflictsinfo(Queue *conflictsinfo, Id p)
 
 
 int
-expander_expand(Expander *xp, Queue *in, Queue *out)
+expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
 {
   Pool *pool = xp->pool;
   Queue todo, errors, cerrors, qq, posfoundq;
@@ -662,6 +662,20 @@ expander_expand(Expander *xp, Queue *in, Queue *out)
   queue_empty(out);
   cidone = 0;
 
+  if (inconfl)
+    {
+      for (i = 0; i < inconfl->count; i += 2)
+	{
+	  Id con = inconfl->elements[i];
+	  FOR_PROVIDES(p, pp, con)
+	    {
+	      if (inconfl->elements[i + 1] && !pool_match_nevr(pool, pool->solvables + p, con))
+		continue;
+	      MAPEXP(&conflicts, pool->nsolvables);
+	      MAPSET(&conflicts, p);
+	    }
+	}
+    }
   /* do direct expands */
   for (i = 0; i < in->count; i++)
     {
@@ -2575,12 +2589,13 @@ expand(BSSolv::expander xp, ...)
 	{
 	    Pool *pool;
 	    int i, nerrors;
-	    Id id, who;
-	    Queue revertignore, in, out;
+	    Id id, who, conflbuf[16];
+	    Queue revertignore, in, out, confl;
 
 	    queue_init(&revertignore);
 	    queue_init(&in);
 	    queue_init(&out);
+	    queue_init_buffer(&confl, conflbuf, sizeof(conflbuf)/sizeof(*conflbuf));
 	    pool = xp->pool;
 	    for (i = 1; i < items; i++)
 	      {
@@ -2608,6 +2623,11 @@ expand(BSSolv::expander xp, ...)
 			queue_push(&revertignore, -id);
 		      }
 		  }
+		else if (*s == '!')
+		  {
+		    Id id = dep2id(pool, s + (s[1] == '!' ? 2 : 1));
+		    queue_push2(&confl, id, s[1] == '!' ? 1 : 0);
+		  }
 		else
 		  {
 		    Id id = dep2id(pool, s);
@@ -2623,7 +2643,7 @@ expand(BSSolv::expander xp, ...)
 	    MAPEXP(&xp->prefernegx, pool->ss.nstrings);
 	    MAPEXP(&xp->conflicts, pool->ss.nstrings);
 
-	    nerrors = expander_expand(xp, &in, &out);
+	    nerrors = expander_expand(xp, &in, &out, &confl);
 
 	    /* revert ignores */
 	    for (i = 0; i < revertignore.count; i++)
@@ -2636,6 +2656,7 @@ expand(BSSolv::expander xp, ...)
 	      }
 	    queue_free(&revertignore);
 	    queue_free(&in);
+	    queue_free(&confl);
 
 	    if (nerrors)
 	      {
