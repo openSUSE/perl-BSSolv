@@ -431,8 +431,9 @@ expander_dbg(Expander *xp, const char *format, ...)
   vsnprintf(buf, sizeof(buf), format, args);
   va_end(args);
   printf("%s", buf);
-  fflush(stdout);
   l = strlen(buf);
+  if (buf[0] != ' ' || (l && buf[l - 1] == '\n'))
+    fflush(stdout);
   if (l >= xp->debugstrf)	/* >= because of trailing \0 */
     {
       xp->debugstr = solv_realloc(xp->debugstr, xp->debugstrl + l + 1024);
@@ -2618,9 +2619,13 @@ expand(BSSolv::expander xp, ...)
 	    queue_init(&out);
 	    queue_init_buffer(&confl, conflbuf, sizeof(conflbuf)/sizeof(*conflbuf));
 	    pool = xp->pool;
+	    if (xp->debug)
+	      expander_dbg(xp, "expand args:");
 	    for (i = 1; i < items; i++)
 	      {
 		char *s = SvPV_nolen(ST(i));
+		if (xp->debug)
+		  expander_dbg(xp, " %s", s);
 		if (*s == '-')
 		  {
 		    Id id;
@@ -2660,6 +2665,8 @@ expand(BSSolv::expander xp, ...)
 		    queue_push(&in, id);
 		  }
 	      }
+	    if (xp->debug)
+	      expander_dbg(xp, "\n");
 
 	    MAPEXP(&xp->ignored, pool->ss.nstrings);
 	    MAPEXP(&xp->ignoredx, pool->ss.nstrings);
