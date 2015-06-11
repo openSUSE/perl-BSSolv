@@ -1,4 +1,14 @@
 -------------------------------------------------------------------
+Thu Jun 11 08:08:32 UTC 2015 - adrian@suse.de
+
+- update to version 0.22.0 (perl module 0.02 version)
+  * implement handling of conflicts (aka '!') deps in expander
+  * treat ARCH_ANY like ARCH_ALL
+  * improve conflictsinfo handling
+  * support --ignoreignore-- flag
+  * improved debug output
+
+-------------------------------------------------------------------
 Thu Sep 18 11:32:58 CEST 2014 - ro@suse.de
 
 - update to BSSolv.xs from GIT 

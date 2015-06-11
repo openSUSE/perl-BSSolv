@@ -1,7 +1,7 @@
 #
 # spec file for package perl-BSSolv
 #
-# Copyright (c) 2014 SUSE LINUX Products GmbH, Nuernberg, Germany.
+# Copyright (c) 2015 SUSE LINUX GmbH, Nuernberg, Germany.
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -17,9 +17,9 @@
 
 
 Name:           perl-BSSolv
-Version:        0.20.0
+Version:        0.22.0
 Release:        0
-Url:            https://github.com/openSUSE/libsolv
+Url:            https://github.com/openSUSE/perl-BSSolv
 Source:         libsolv-0.4.0.tar.bz2
 Source1:        Makefile.PL
 Source2:        BSSolv.pm
