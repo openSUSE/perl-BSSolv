@@ -13,6 +13,7 @@
 #include "util.h"
 #include "evr.h"
 #include "hash.h"
+#include "chksum.h"
 #include "repo_solv.h"
 #include "repo_write.h"
 #include "repo_rpmdb.h"
@@ -1887,6 +1888,20 @@ repofromdata(BSSolv::pool pool, char *name, HV *rhv)
 		  }
 		if (s->evr)
 		  s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
+		str = hvlookupstr(hv, "checksum", 8);
+		if (str)
+		  {
+		    char *cp, typebuf[7];
+		    Id ctype;
+		    if ((cp = strchr(str, ':')) != 0 && cp - str < sizeof(ctype) - 1)
+		      {
+		        strncpy(typebuf, str, cp - str);
+			typebuf[cp - str] = 0;
+			ctype = solv_chksum_str2type(typebuf);
+			if (ctype)
+			  repodata_set_checksum(data, p, SOLVABLE_CHECKSUM, ctype, cp + 1);
+		      }
+		  }
 	      }
 	    repodata_set_str(data, SOLVID_META, buildservice_repocookie, REPOCOOKIE);
 	    if (name && !strcmp(name, "/external/"))
@@ -1968,6 +1983,19 @@ consideredpackages(BSSolv::pool pool)
 		PUSHs(sv_2mortal(newSViv((IV)p)));
 	}
 	
+void
+allpackages(BSSolv::pool pool)
+    PPCODE:
+	{
+	    int p, nsolv = 0;
+	    for (p = 2; p < pool->nsolvables; p++)
+	      if (pool->solvables[p].repo)
+		nsolv++;
+	    EXTEND(SP, nsolv);
+	    for (p = 2; p < pool->nsolvables; p++)
+	      if (pool->solvables[p].repo)
+		PUSHs(sv_2mortal(newSViv((IV)p)));
+	}
 
 const char *
 pkg2name(BSSolv::pool pool, int p)
@@ -2045,6 +2073,49 @@ pkg2sizek(BSSolv::pool pool, int p)
 #else
 	RETVAL = solvable_lookup_num(pool->solvables + p, SOLVABLE_DOWNLOADSIZE, 0);
 #endif
+    OUTPUT:
+	RETVAL
+
+const char *
+pkg2checksum(BSSolv::pool pool, int p)
+    CODE:
+	{
+	    Id type;
+	    const char *s = solvable_lookup_checksum(pool->solvables + p, SOLVABLE_CHECKSUM, &type);
+	    if (s)
+		s = pool_tmpjoin(pool, solv_chksum_type2str(type), ":", s);
+	    RETVAL = s;
+	}
+    OUTPUT:
+	RETVAL
+
+int
+verifypkgchecksum(BSSolv::pool pool, int p, char *path)
+    CODE:
+	{
+	    Id type;
+	    const unsigned char *cin, *cout;
+	    FILE *fp;
+	    Chksum *cs;
+	    int cslen;
+	    char buf[4096];
+	    size_t len;
+	    int res = 0;
+
+	    if ((cin = solvable_lookup_bin_checksum(pool->solvables + p, SOLVABLE_CHECKSUM, &type)) != 0) {
+		if ((fp = fopen(path, "r")) != 0) {
+		    if ((cs = solv_chksum_create(type)) != 0) {
+			while ((len = fread(buf, 1, sizeof(buf), fp)) > 0)
+			    solv_chksum_add(cs, buf, len);
+			if ((cout = solv_chksum_get(cs, &cslen)) != 0 && cslen && !memcmp(cin, cout, cslen))
+			    res = 1;
+			solv_chksum_free(cs, 0);
+		    }
+		    fclose(fp);
+		}
+	    }
+	    RETVAL = res;
+	}
     OUTPUT:
 	RETVAL
 
