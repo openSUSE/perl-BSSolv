@@ -1067,6 +1067,39 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
   return nerrors;
 }
 
+static void
+set_disttype(Pool *pool, int disttype)
+{
+  pool_setdisttype(pool, disttype);
+#ifdef POOL_FLAG_HAVEDISTEPOCH
+  /* make newer mandriva work, hopefully there are no ill effects... */
+  pool_set_flag(pool, POOL_FLAG_HAVEDISTEPOCH, disttype == DISTTYPE_RPM ? 1 : 0);
+#endif
+}
+
+static void
+set_disttype_from_location(Pool *pool, Solvable *so)
+{
+  const char *s = solvable_get_location(so, (unsigned int *)0);
+  int disttype = -1;
+  int sl;
+  if (!s)
+    return;
+  sl = strlen(s);
+  if (disttype < 0 && sl >= 4 && !strcmp(s + sl - 4, ".rpm"))
+    disttype = DISTTYPE_RPM;
+#ifdef DISTTYPE_DEB
+  if (disttype < 0 && sl >= 4 && !strcmp(s + sl - 4, ".deb"))
+    disttype = DISTTYPE_DEB;
+#endif
+#ifdef DISTTYPE_ARCH
+  if (disttype < 0 && sl >= 11 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz")))
+    disttype = DISTTYPE_ARCH;
+#endif
+  if (disttype >= 0 && pool->disttype != disttype)
+    set_disttype(pool, disttype);
+}
+
 void
 create_considered(Pool *pool, Repo *repoonly, Map *considered)
 {
@@ -1074,6 +1107,7 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
   Solvable *s, *sb;
   int ridx;
   Repo *repo;
+  int olddisttype = -1;
 
   map_init(considered, pool->nsolvables);
   best = solv_calloc(sizeof(Id), pool->ss.nstrings);
@@ -1106,7 +1140,13 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
 	      else if (s->evr != sb->evr)
 		{
 		  /* same repo, check versions */
-		  int r = pool_evrcmp(pool, sb->evr, s->evr, EVRCMP_COMPARE);
+		  int r;
+		  if (olddisttype < 0)
+		    {
+		      olddisttype = pool->disttype;
+		      set_disttype_from_location(pool, s);
+		    }
+		  r = pool_evrcmp(pool, sb->evr, s->evr, EVRCMP_COMPARE);
 		  if (r > 0)
 		    continue;
 		  else if (r == 0)
@@ -1130,6 +1170,8 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
 	}
     }
   solv_free(best);
+  if (olddisttype >= 0 && pool->disttype != olddisttype)
+    set_disttype(pool, olddisttype);
 }
 
 struct metaline {
@@ -1694,11 +1736,7 @@ new(char *packname = "BSSolv::pool")
     CODE:
 	{
 	    Pool *pool = pool_create();
-	    pool_setdisttype(pool, DISTTYPE_RPM);
-#ifdef POOL_FLAG_HAVEDISTEPOCH
-	    /* make newer mandriva work, hopefully there are no ill effects... */
-	    pool_set_flag(pool, POOL_FLAG_HAVEDISTEPOCH, 1);
-#endif
+	    set_disttype(pool, DISTTYPE_RPM);
 	    buildservice_id = pool_str2id(pool, "buildservice:id", 1);
 	    buildservice_repocookie= pool_str2id(pool, "buildservice:repocookie", 1);
 	    buildservice_external = pool_str2id(pool, "buildservice:external", 1);
@@ -1713,23 +1751,15 @@ new(char *packname = "BSSolv::pool")
 void
 settype(BSSolv::pool pool, char *type)
     CODE:
-#ifdef POOL_FLAG_HAVEDISTEPOCH
-	pool_set_flag(pool, POOL_FLAG_HAVEDISTEPOCH, 0);
-#endif
 	if (!strcmp(type, "rpm"))
-	  {
-	    pool_setdisttype(pool, DISTTYPE_RPM);
-#ifdef POOL_FLAG_HAVEDISTEPOCH
-	    pool_set_flag(pool, POOL_FLAG_HAVEDISTEPOCH, 1);
-#endif
-	  }
+	  set_disttype(pool, DISTTYPE_RPM);
 #ifdef DISTTYPE_DEB
 	else if (!strcmp(type, "deb"))
-	  pool_setdisttype(pool, DISTTYPE_DEB);
+	  set_disttype(pool, DISTTYPE_DEB);
 #endif
 #ifdef DISTTYPE_ARCH
 	else if (!strcmp(type, "arch"))
-	  pool_setdisttype(pool, DISTTYPE_ARCH);
+	  set_disttype(pool, DISTTYPE_ARCH);
 #endif
 	else
 	  croak("settype: unknown type '%s'\n", type);
