@@ -57,6 +57,7 @@ static Id buildservice_repocookie;
 static Id buildservice_external;
 static Id buildservice_dodurl;
 static Id expander_directdepsend;
+static Id buildservice_dodcookie;
 
 /* make sure bit n is usable */
 #define MAPEXP(m, n) ((m)->size < (((n) + 8) >> 3) ? map_grow(m, n + 256) : 0)
@@ -305,6 +306,107 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
     }
   if (av)
     (void)hv_store(hv, key, keyl, newRV_noinc((SV*)av), 0);
+}
+
+void
+data2solvables(Repo *repo, Repodata *data, HV *rhv)
+{
+  Pool *pool = repo->pool;
+  SV *sv;
+  HV *hv;
+  char *str, *key;
+  I32 keyl;
+  Id p;
+  Solvable *s;
+
+  hv_iterinit(rhv);
+  while ((sv = hv_iternextsv(rhv, &key, &keyl)) != 0)
+    {
+      if (!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVHV)
+	continue;
+      hv = (HV *)SvRV(sv);
+      str = hvlookupstr(hv, "name", 4);
+      if (!str)
+	continue;	/* need to have a name */
+      p = repo_add_solvable(repo);
+      s = pool_id2solvable(pool, p);
+      s->name = pool_str2id(pool, str, 1);
+      str = hvlookupstr(hv, "arch", 4);
+      if (!str)
+	str = "";	/* dummy, need to have arch */
+      s->arch = pool_str2id(pool, str, 1);
+      s->evr = makeevr(pool, hvlookupstr(hv, "epoch", 5), hvlookupstr(hv, "version", 7), hvlookupstr(hv, "release", 7));
+      str = hvlookupstr(hv, "path", 4);
+      if (str)
+	{
+	  char *ss = strrchr(str, '/');
+	  if (ss)
+	    {
+	      *ss = 0;
+	      repodata_set_str(data, p, SOLVABLE_MEDIADIR, str);
+	      *ss++ = '/';
+	    }
+	  else
+	    ss = str;
+	  repodata_set_str(data, p, SOLVABLE_MEDIAFILE, ss);
+	}
+      str = hvlookupstr(hv, "id", 2);
+      if (str)
+	repodata_set_str(data, p, buildservice_id, str);
+      str = hvlookupstr(hv, "source", 6);
+      if (str)
+	repodata_set_poolstr(data, p, SOLVABLE_SOURCENAME, str);
+      str = hvlookupstr(hv, "hdrmd5", 6);
+      if (str && strlen(str) == 32)
+	repodata_set_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, str);
+      s->provides    = importdeps(hv, "provides", 8, repo);
+      s->obsoletes   = importdeps(hv, "obsoletes", 9, repo);
+      s->conflicts   = importdeps(hv, "conflicts", 9, repo);
+      s->requires    = importdeps(hv, "requires", 8, repo);
+      s->recommends  = importdeps(hv, "recommends", 10, repo);
+      s->suggests    = importdeps(hv, "suggests", 8, repo);
+      s->supplements = importdeps(hv, "supplements", 11, repo);
+      s->enhances    = importdeps(hv, "enhances", 8, repo);
+      if (!s->evr && s->provides)
+	{
+	  /* look for self provides */
+	  Id pro, *prop = s->repo->idarraydata + s->provides;
+	  while ((pro = *prop++) != 0)
+	    {
+	      Reldep *rd;
+	      if (!ISRELDEP(pro))
+		continue;
+	      rd = GETRELDEP(pool, pro);
+	      if (rd->name == s->name && rd->flags == REL_EQ)
+		s->evr = rd->evr;
+	    }
+	}
+      if (s->evr)
+	s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
+      str = hvlookupstr(hv, "checksum", 8);
+      if (str)
+	{
+	  char *cp, typebuf[7];
+	  Id ctype;
+	  if ((cp = strchr(str, ':')) != 0 && cp - str < sizeof(ctype) - 1)
+	    {
+	      strncpy(typebuf, str, cp - str);
+	      typebuf[cp - str] = 0;
+	      ctype = solv_chksum_str2type(typebuf);
+	      if (ctype)
+		repodata_set_checksum(data, p, SOLVABLE_CHECKSUM, ctype, cp + 1);
+	    }
+	}
+    }
+
+  repodata_set_str(data, SOLVID_META, buildservice_repocookie, REPOCOOKIE);
+  str = hvlookupstr(rhv, "/url", 4);
+  if (str)
+    {
+      repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
+      str = hvlookupstr(rhv, "/dodcookie", 10);
+	repodata_set_str(data, SOLVID_META, buildservice_dodcookie, str);
+    }
 }
 
 static SV *
@@ -572,7 +674,7 @@ expander_checkconflicts(Expander *xp, Id p, Map *installed, Id *conflicts, int i
 {
   Pool *pool = xp->pool;
   Id con, p2, pp2;
-  
+
   if (xp->ignoreconflicts)
     return 0;
   while ((con = *conflicts++) != 0)
@@ -639,7 +741,7 @@ static inline int
 findconflictsinfo(Queue *conflictsinfo, Id p)
 {
   int i;
-  
+
   for (i = 0; i < conflictsinfo->count; i++)
     if (conflictsinfo->elements[i] == p)
       return conflictsinfo->elements[i + 1];
@@ -1080,7 +1182,8 @@ set_disttype(Pool *pool, int disttype)
 static void
 set_disttype_from_location(Pool *pool, Solvable *so)
 {
-  const char *s = solvable_get_location(so, (unsigned int *)0);
+  unsigned int medianr;
+  const char *s = solvable_get_location(so, &medianr);
   int disttype = -1;
   int sl;
   if (!s)
@@ -1108,13 +1211,16 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
   int ridx;
   Repo *repo;
   int olddisttype = -1;
+  int dodrepo;
 
   map_init(considered, pool->nsolvables);
   best = solv_calloc(sizeof(Id), pool->ss.nstrings);
+  
   FOR_REPOS(ridx, repo)
     {
       if (repoonly && repo != repoonly)
 	continue;
+      dodrepo = repo_lookup_str(repo, SOLVID_META, buildservice_dodurl) != 0;
       FOR_REPO_SOLVABLES(repo, p, s)
 	{
 	  if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
@@ -1125,13 +1231,14 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
 	      sb = pool->solvables + pb;
 	      if (s->repo != sb->repo)
 		continue;	/* first repo wins */
-	      else if (s->arch != sb->arch)
+	      if (s->arch != sb->arch)
 		{
 		  int r;
 		  if (s->arch == ARCH_NOARCH || s->arch == ARCH_ALL || s->arch == ARCH_ANY)
 		    continue;
 		  if (sb->arch != ARCH_NOARCH && sb->arch != ARCH_ALL && sb->arch != ARCH_ANY)
 		    {
+		      /* the strcmp is kind of silly, but works for most archs */
 		      r = strcmp(pool_id2str(pool, sb->arch), pool_id2str(pool, s->arch));
 		      if (r >= 0)
 			continue;
@@ -1156,17 +1263,40 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
 			continue;
 		    }
 		}
-	      else
-		{
-		  const char *bsid = solvable_lookup_str(sb, buildservice_id);
-		  /* always replace dod packages */
-		  if (!(bsid && strcmp(bsid, "dod") == 0))
-		    continue;
-		}
-	      MAPCLR(considered, pb);
 	    }
+	   if (dodrepo)
+	    {
+	      /* we only consider dod packages */
+	      const char *bsid = solvable_lookup_str(s, buildservice_id);
+	      if (!bsid || strcmp(bsid, "dod") != 0)
+		continue;
+	    }
+	  if (pb)
+	    MAPCLR(considered, pb);
 	  best[s->name] = p;
 	  MAPSET(considered, p);
+	}
+      /* dodrepos have a second pass: replace dod entries with downloaded ones */
+      if (dodrepo)
+	{
+	  const char *bsid;
+	  FOR_REPO_SOLVABLES(repo, p, s)
+	    {
+	      if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
+		continue;
+	      pb = best[s->name];
+	      if (!pb || pb == p)
+		continue;
+	      sb = pool->solvables + pb;
+	      if (sb->repo != s->repo || sb->name != s->name || sb->arch != s->arch || sb->evr != s->evr)
+		continue;
+	      bsid = solvable_lookup_str(s, buildservice_id);
+	      if (bsid && strcmp(bsid, "dod") == 0)
+		continue;	/* not downloaded */
+	      MAPCLR(considered, pb);
+	      best[s->name] = p;
+	      MAPSET(considered, p);
+	    }
 	}
     }
   solv_free(best);
@@ -1742,12 +1872,13 @@ new(char *packname = "BSSolv::pool")
 	    buildservice_external = pool_str2id(pool, "buildservice:external", 1);
 	    buildservice_dodurl = pool_str2id(pool, "buildservice:dodurl", 1);
 	    expander_directdepsend = pool_str2id(pool, "-directdepsend--", 1);
+	    buildservice_dodcookie = pool_str2id(pool, "buildservice:dodcookie", 1);
 	    pool_freeidhashes(pool);
 	    RETVAL = pool;
 	}
     OUTPUT:
 	RETVAL
-    
+
 void
 settype(BSSolv::pool pool, char *type)
     CODE:
@@ -1845,100 +1976,11 @@ repofromdata(BSSolv::pool pool, char *name, HV *rhv)
 	{
 	    Repo *repo;
 	    Repodata *data;
-	    SV *sv;
-	    HV *hv;
-	    char *str, *key;
-	    I32 keyl;
-	    Id p;
-	    Solvable *s;
-
 	    repo = repo_create(pool, name);
 	    data = repo_add_repodata(repo, 0);
-	    hv_iterinit(rhv);
-	    while ((sv = hv_iternextsv(rhv, &key, &keyl)) != 0)
-	      {
-		if (!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVHV)
-		  continue;
-		hv = (HV *)SvRV(sv);
-		str = hvlookupstr(hv, "name", 4);
-		if (!str)
-		  continue;	/* need to have a name */
-		p = repo_add_solvable(repo);
-		s = pool_id2solvable(pool, p);
-		s->name = pool_str2id(pool, str, 1);
-		str = hvlookupstr(hv, "arch", 4);
-		if (!str)
-		  str = "";	/* dummy, need to have arch */
-	        s->arch = pool_str2id(pool, str, 1);
-		s->evr = makeevr(pool, hvlookupstr(hv, "epoch", 5), hvlookupstr(hv, "version", 7), hvlookupstr(hv, "release", 7));
-		str = hvlookupstr(hv, "path", 4);
-		if (str)
-		  {
-		    char *ss = strrchr(str, '/');
-		    if (ss)
-		      {
-			*ss = 0;
-			repodata_set_str(data, p, SOLVABLE_MEDIADIR, str);
-			*ss++ = '/';
-		      }
-		    else
-		      ss = str;
-		    repodata_set_str(data, p, SOLVABLE_MEDIAFILE, ss);
-		  }
-		str = hvlookupstr(hv, "id", 2);
-		if (str)
-		  repodata_set_str(data, p, buildservice_id, str);
-		str = hvlookupstr(hv, "source", 6);
-		if (str)
-		  repodata_set_poolstr(data, p, SOLVABLE_SOURCENAME, str);
-		str = hvlookupstr(hv, "hdrmd5", 6);
-		if (str && strlen(str) == 32)
-		  repodata_set_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, str);
-	        s->provides    = importdeps(hv, "provides", 8, repo);
-	        s->obsoletes   = importdeps(hv, "obsoletes", 9, repo);
-	        s->conflicts   = importdeps(hv, "conflicts", 9, repo);
-	        s->requires    = importdeps(hv, "requires", 8, repo);
-	        s->recommends  = importdeps(hv, "recommends", 10, repo);
-	        s->suggests    = importdeps(hv, "suggests", 8, repo);
-	        s->supplements = importdeps(hv, "supplements", 11, repo);
-	        s->enhances    = importdeps(hv, "enhances", 8, repo);
-		if (!s->evr && s->provides)
-		  {
-		    /* look for self provides */
-		    Id pro, *prop = s->repo->idarraydata + s->provides;
-		    while ((pro = *prop++) != 0)
-		      {
-		        Reldep *rd;
-			if (!ISRELDEP(pro))
-			  continue;
-		        rd = GETRELDEP(pool, pro);
-			if (rd->name == s->name && rd->flags == REL_EQ)
-			  s->evr = rd->evr;
-		      }
-		  }
-		if (s->evr)
-		  s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
-		str = hvlookupstr(hv, "checksum", 8);
-		if (str)
-		  {
-		    char *cp, typebuf[7];
-		    Id ctype;
-		    if ((cp = strchr(str, ':')) != 0 && cp - str < sizeof(ctype) - 1)
-		      {
-		        strncpy(typebuf, str, cp - str);
-			typebuf[cp - str] = 0;
-			ctype = solv_chksum_str2type(typebuf);
-			if (ctype)
-			  repodata_set_checksum(data, p, SOLVABLE_CHECKSUM, ctype, cp + 1);
-		      }
-		  }
-	      }
-	    repodata_set_str(data, SOLVID_META, buildservice_repocookie, REPOCOOKIE);
+	    data2solvables(repo, data, rhv);
 	    if (name && !strcmp(name, "/external/"))
 	      repodata_set_void(data, SOLVID_META, buildservice_external);
-	    str = hvlookupstr(rhv, "/url", 4);
-	    if (str)
-	      repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
 	    repo_internalize(repo);
 	    RETVAL = repo;
 	}
@@ -2260,6 +2302,35 @@ pkgnames(BSSolv::repo repo)
 	    map_free(&c);
 	}
 
+void
+pkgpaths(BSSolv::repo repo)
+    PPCODE:
+	{
+	    Pool *pool = repo->pool;
+	    Id p;
+	    Solvable *s;
+	    Map c;
+	    const char *str;
+	    unsigned int medianr;
+	
+	    create_considered(pool, repo, &c);
+	    EXTEND(SP, 2 * repo->nsolvables);
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      {
+		if (!MAPTST(&c, p))
+		  continue;
+		/* ignore dod packages */
+		str = solvable_lookup_str(s, buildservice_id);
+		if (str && !strcmp(str, "dod"))
+		  continue;
+		str = solvable_get_location(pool->solvables + p, &medianr);
+		if (!str)
+		  continue;
+		PUSHs(sv_2mortal(newSVpv(str, 0)));
+		PUSHs(sv_2mortal(newSViv(p)));
+	      }
+	    map_free(&c);
+	}
 
 void
 tofile(BSSolv::repo repo, char *filename)
@@ -2334,7 +2405,7 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
 	    Solvable *s;
 	    STRLEN sl;
 	    const char *oldcookie;
-	  
+
 	    map_init(&reused, repo->end - repo->start);
 	    if (repo_lookup_str(repo, SOLVID_META, buildservice_dodurl))
 	      {
@@ -2495,6 +2566,35 @@ dodurl(BSSolv::repo repo)
     OUTPUT:
 	RETVAL
 
+const char *
+dodcookie(BSSolv::repo repo)
+    CODE:
+	RETVAL = repo_lookup_str(repo, SOLVID_META, buildservice_dodcookie);
+    OUTPUT:
+	RETVAL
+
+void
+updatedoddata(BSSolv::repo repo, HV *rhv = 0)
+    CODE:
+	{
+	    Id p;
+	    Solvable *s;
+	    Repodata *data;
+	    /* delete old dod data */
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      {
+		const char *str = solvable_lookup_str(s, buildservice_id);
+		if (!str || !strcmp(str, "dod"))
+		    repo_free_solvable(repo, p, 1);
+	      }
+	    data = repo_add_repodata(repo, REPO_REUSE_REPODATA);
+	    repodata_unset(data, SOLVID_META, buildservice_dodurl);
+	    repodata_unset(data, SOLVID_META, buildservice_dodcookie);
+	    /* add new data */
+	    if (rhv)
+		data2solvables(repo, data, rhv);
+	    repo_internalize(repo);
+	}
 
 
 MODULE = BSSolv		PACKAGE = BSSolv::expander	PREFIX = expander
