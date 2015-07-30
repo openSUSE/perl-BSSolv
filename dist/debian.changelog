@@ -1,3 +1,9 @@
+libbssolv-perl (0.4.0-3) unstable; urgency=low
+
+  * implement download on demand data updating
+
+ -- Michael Schroeder <mls@suse.de>  Thu, 30 Jul 2015 15:55:51 +0200
+
 libbssolv-perl (0.4.0-2) unstable; urgency=low
 
   * update to git #a93b6ed8
