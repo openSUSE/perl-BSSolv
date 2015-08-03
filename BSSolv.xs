@@ -2168,7 +2168,7 @@ verifypkgchecksum(BSSolv::pool pool, int p, char *path)
 	    Id type;
 	    const unsigned char *cin, *cout;
 	    FILE *fp;
-	    Chksum *cs;
+	    void *cs;
 	    int cslen;
 	    char buf[4096];
 	    size_t len;
