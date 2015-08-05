@@ -386,9 +386,9 @@ data2solvables(Repo *repo, Repodata *data, HV *rhv)
       str = hvlookupstr(hv, "checksum", 8);
       if (str)
 	{
-	  char *cp, typebuf[7];
+	  char *cp, typebuf[8];
 	  Id ctype;
-	  if ((cp = strchr(str, ':')) != 0 && cp - str < sizeof(ctype) - 1)
+	  if ((cp = strchr(str, ':')) != 0 && cp - str < sizeof(ctype))
 	    {
 	      strncpy(typebuf, str, cp - str);
 	      typebuf[cp - str] = 0;
