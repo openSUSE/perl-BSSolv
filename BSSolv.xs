@@ -388,7 +388,7 @@ data2solvables(Repo *repo, Repodata *data, HV *rhv)
 	{
 	  char *cp, typebuf[8];
 	  Id ctype;
-	  if ((cp = strchr(str, ':')) != 0 && cp - str < sizeof(ctype))
+	  if (*str != ':' && (cp = strchr(str, ':')) != 0 && cp - str < sizeof(typebuf))
 	    {
 	      strncpy(typebuf, str, cp - str);
 	      typebuf[cp - str] = 0;
