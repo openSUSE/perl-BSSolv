@@ -1,3 +1,9 @@
+libbssolv-perl (0.4.0-4) unstable; urgency=low
+
+  * allow setting of the dodcookie without a dodurl
+
+ -- Michael Schroeder <mls@suse.de>  Tue, 18 Aug 2015 16:35:51 +0200
+
 libbssolv-perl (0.4.0-3) unstable; urgency=low
 
   * implement download on demand data updating
