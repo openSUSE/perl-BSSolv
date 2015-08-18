@@ -402,11 +402,10 @@ data2solvables(Repo *repo, Repodata *data, HV *rhv)
   repodata_set_str(data, SOLVID_META, buildservice_repocookie, REPOCOOKIE);
   str = hvlookupstr(rhv, "/url", 4);
   if (str)
-    {
-      repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
-      str = hvlookupstr(rhv, "/dodcookie", 10);
-	repodata_set_str(data, SOLVID_META, buildservice_dodcookie, str);
-    }
+    repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
+  str = hvlookupstr(rhv, "/dodcookie", 10);
+  if (str)
+    repodata_set_str(data, SOLVID_META, buildservice_dodcookie, str);
 }
 
 static SV *
