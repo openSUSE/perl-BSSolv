@@ -80,6 +80,8 @@ myrepowritefilter(Repo *repo, Repokey *key, void *kfdata)
     return KEY_STORAGE_DROPPED;
   if (key->name == SOLVABLE_PKGID)
     return KEY_STORAGE_INCORE;
+  if (key->name == SOLVABLE_CHECKSUM)
+    return KEY_STORAGE_INCORE;
   i = repo_write_stdkeyfilter(repo, key, kfdata);
   if (i == KEY_STORAGE_VERTICAL_OFFSET)
     return KEY_STORAGE_DROPPED;
