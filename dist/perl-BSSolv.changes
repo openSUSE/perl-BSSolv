@@ -1,4 +1,10 @@
 -------------------------------------------------------------------
+Tue Aug 18 16:43:22 CEST 2015 - mls@suse.de
+
+- update to version 0.25.0 (perl module 0.05 version)
+  * make checksums pass our writefilter
+
+-------------------------------------------------------------------
 Tue Aug 18 16:35:36 CEST 2015 - mls@suse.de
 
 - update to version 0.24.0 (perl module 0.04 version)
