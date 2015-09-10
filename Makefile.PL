@@ -3,15 +3,16 @@ use ExtUtils::MakeMaker;
 my $solvprefix = '/usr';
 
 my $inc = "-I$solvprefix/include/solv";
-my $lib = '';
+my $lib;
 
 if (grep {$_ eq '--bundled-libsolv'} @ARGV) {
   my $builddir = 'libsolv';
   $inc = "-I$builddir/src -I$builddir/ext";
-  $lib = "-L$builddir/src -L$builddir/ext";
+  $lib = "-L$builddir/src -L$builddir/ext -lsolvext -lsolv -lz -llzma";
+} else {
+  $lib = '-lsolvext -lsolv';
 }
 
-$lib = ($lib ? "$lib " : '') . '-lsolvext -lsolv -lz -llzma';
 
 WriteMakefile(
     NAME         => 'BSSolv',
