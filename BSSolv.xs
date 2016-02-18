@@ -2815,6 +2815,9 @@ expand(BSSolv::expander xp, ...)
 	    Id id, who, conflbuf[16];
 	    Queue revertignore, in, out, confl;
 	    int oldignoreignore = xp->ignoreignore;
+	    int ignoreignore = 0;
+	    Map oldignored, oldignoredx;
+	    int ignoremapssaved = 0;
 
 	    queue_init(&revertignore);
 	    queue_init(&in);
@@ -2831,30 +2834,18 @@ expand(BSSolv::expander xp, ...)
 		if (*s == '-')
 		  {
 		    Id id;
-		    if (s[1] == '-' && !strcmp(s, "--ignoreignore--")) {
-		      xp->ignoreignore = 1;
-		      continue;
-		    }
+		    if (s[1] == '-' && !strcmp(s, "--ignoreignore--"))
+		      {
+		        ignoreignore = 1;
+		        continue;
+		      }
 		    id = pool_str2id(pool, s + 1, 1);
 		    if (id == expander_directdepsend)
 		      {
 			queue_push(&in, id);
 			continue;
 		      }
-		    MAPEXP(&xp->ignored, id);
-		    if (MAPTST(&xp->ignored, id))
-		      continue;
-		    MAPSET(&xp->ignored, id);
 		    queue_push(&revertignore, id);
-		    if ((s = strchr(s + 1, ':')) != 0)
-		      {
-			id = pool_str2id(pool, s + 1, 1);
-			MAPEXP(&xp->ignoredx, id);
-			if (MAPTST(&xp->ignoredx, id))
-			  continue;
-			MAPSET(&xp->ignoredx, id);
-			queue_push(&revertignore, -id);
-		      }
 		  }
 		else if (*s == '!')
 		  {
@@ -2870,6 +2861,48 @@ expand(BSSolv::expander xp, ...)
 	    if (xp->debug)
 	      expander_dbg(xp, "\n");
 
+	    if (ignoreignore && revertignore.count)
+	      {
+		/* bad: have direct ignores and project config ignores */
+		oldignored = xp->ignored;
+		oldignoredx = xp->ignoredx;
+		ignoremapssaved = 1;
+		/* clear project config maps */
+		memset(&xp->ignored, 0, sizeof(xp->ignored));
+		memset(&xp->ignoredx, 0, sizeof(xp->ignoredx));
+	      }
+
+	    if (revertignore.count)
+	      {
+		/* mix direct ignores with ignores from project config */
+	        int revertcnt = revertignore.count;
+		for (i = 0; i < revertcnt; i++)
+		  {
+		    const char *ss;
+		    id = revertignore.elements[i];
+		    MAPEXP(&xp->ignored, id);
+		    if (MAPTST(&xp->ignored, id))
+		      continue;
+		    MAPSET(&xp->ignored, id);
+		    queue_push(&revertignore, id);
+		    if ((ss = strchr(pool_id2str(pool, id), ':')) != 0)
+		      {
+			id = pool_str2id(pool, ss + 1, 1);
+			MAPEXP(&xp->ignoredx, id);
+			if (MAPTST(&xp->ignoredx, id))
+			  continue;
+			MAPSET(&xp->ignoredx, id);
+			queue_push(&revertignore, -id);
+		      }
+		  }
+		queue_deleten(&revertignore, 0, revertcnt);
+	      }
+	    else if (ignoreignore)
+	      {
+		/* no direct ignores, disable ignore processing */
+	        xp->ignoreignore = 1;
+	      }
+
 	    MAPEXP(&xp->ignored, pool->ss.nstrings);
 	    MAPEXP(&xp->ignoredx, pool->ss.nstrings);
 	    MAPEXP(&xp->preferpos, pool->ss.nstrings);
@@ -2882,15 +2915,26 @@ expand(BSSolv::expander xp, ...)
 
 	    /* revert ignores */
 	    xp->ignoreignore = oldignoreignore;
-	    for (i = 0; i < revertignore.count; i++)
+	    if (ignoremapssaved)
 	      {
-		id = revertignore.elements[i];
-		if (id > 0)
-		  MAPCLR(&xp->ignored, id);
-		else
-		  MAPCLR(&xp->ignoredx, -id);
+		map_free(&xp->ignored);
+		map_free(&xp->ignoredx);
+		xp->ignored = oldignored;
+		xp->ignoredx = oldignoredx;
+	      }
+	    else
+	      {
+		for (i = 0; i < revertignore.count; i++)
+		  {
+		    id = revertignore.elements[i];
+		    if (id > 0)
+		      MAPCLR(&xp->ignored, id);
+		    else
+		      MAPCLR(&xp->ignoredx, -id);
+		  }
 	      }
 	    queue_free(&revertignore);
+
 	    queue_free(&in);
 	    queue_free(&confl);
 
