@@ -1397,7 +1397,7 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 	    if (items == 4)
 	      {
 		/* only one item */
-		char *s = SvPV_nolen(ST(2));
+		char *s = SvPV_nolen(ST(3));
 		EXTEND(SP, 1);
 		sv = newSVpv(s, 0);
 		PUSHs(sv_2mortal(sv));
