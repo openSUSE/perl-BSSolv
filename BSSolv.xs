@@ -1372,6 +1372,19 @@ repodata_addbin(Repodata *data, char *prefix, char *s, int sl, char *sid)
   return p;
 }
 
+static int
+subpack_sort_cmp(const void *ap, const void *bp, void *dp)
+{
+  Pool *pool = (Pool *)dp;
+  const Id *a = ap;
+  const Id *b = bp;
+  int r = a[1] - b[1];
+  if (r)
+    return r;
+  r = strcmp(pool_id2str(pool, a[0]), pool_id2str(pool, b[0]));
+  return r ? r : a[0] - b[0];
+}
+
 MODULE = BSSolv		PACKAGE = BSSolv
 
 void
@@ -2265,6 +2278,107 @@ repos(BSSolv::pool pool)
 		sv_setref_pv(sv, "BSSolv::repo", (void *)repo);
 		PUSHs(sv);
 	      }
+	}
+
+void
+preparehashes(BSSolv::pool pool, char *prp, SV *gctxprpnotreadysv = 0)
+    PPCODE:
+	{
+	    HV *gctxprpnotready = 0;
+	    int ridx;
+	    Repo *repo;
+	    /* generated: */
+	    HV *depislocal = newHV();
+	    HV *dep2pkg = newHV();
+	    HV *dep2src = newHV();
+	    HV *notready = newHV();
+	    HV *subpacks = newHV();
+	    const char *srcstr;
+	    const char *str;
+	    Queue subq;
+	    Id lastsrc, srcname, srctype;
+	    int i, j;
+	    Id p;
+	    Solvable *s;
+	    SV *sv, **svp;
+
+	    if (gctxprpnotreadysv && SvROK(gctxprpnotreadysv) && SvTYPE(SvRV(gctxprpnotreadysv)) == SVt_PVHV)
+	      gctxprpnotready = (HV *)SvRV(gctxprpnotreadysv);
+	    queue_init(&subq);
+	    FOR_REPOS(ridx, repo)
+	      {
+		HV *prpnotready = 0;
+		int islocal = repo->name && !strcmp(repo->name, prp);
+		svp = 0;
+		if (repo->name && !islocal && gctxprpnotready)
+		  svp = hv_fetch(gctxprpnotready, repo->name, strlen(repo->name), 0);
+		if (svp && *svp && SvROK(*svp) && SvTYPE(SvRV(*svp)) == SVt_PVHV)
+		  prpnotready = (HV *)SvRV(*svp);
+		FOR_REPO_SOLVABLES(repo, p, s)
+		  {
+		    if (!MAPTST(pool->considered, p))
+		      continue;
+		    srctype = solvable_lookup_type(pool->solvables + p, SOLVABLE_SOURCENAME);
+		    if (srctype == REPOKEY_TYPE_VOID)
+		      srcname = s->name;
+		    else if (srctype == REPOKEY_TYPE_ID)
+		      srcname = solvable_lookup_id(pool->solvables + p, SOLVABLE_SOURCENAME);
+		    else
+		      {
+			srcstr = solvable_lookup_str(pool->solvables + p, SOLVABLE_SOURCENAME);
+			srcname = srcstr ? pool_str2id(pool, srcstr, 1) : 0;
+		      }
+		    if (!srcname || srcname == 1)
+		      srcname = s->name;
+		    queue_push2(&subq, s->name, srcname);
+
+		    str = pool_id2str(pool, s->name);
+		    (void)hv_store(dep2pkg, str, strlen(str), newSViv((IV)p), 0);
+		    if (islocal)
+		      (void)hv_store(depislocal, str, strlen(str), newSViv((IV)1), 0);
+		    srcstr = pool_id2str(pool, srcname);
+		    (void)hv_store(dep2src, str, strlen(str), newSVpv(srcstr, 0), 0);
+		    if (!islocal && prpnotready)
+		      {
+			svp = hv_fetch(prpnotready, srcstr, strlen(srcstr), 0);
+			if (svp && *svp && SvTRUE(*svp))
+			  (void)hv_store(notready, srcstr, strlen((char *)srcstr), newSViv((IV)2), 0);
+		      }
+		  }
+	      }
+	    solv_sort(subq.elements, subq.count / 2, sizeof(Id) * 2, subpack_sort_cmp, pool);
+	    queue_push2(&subq, 0, 0);
+	    lastsrc = 0;
+	    for (i = j = 0; i < subq.count; i += 2)
+	      {
+		if (subq.elements[i + 1] != lastsrc)
+		  {
+		    if (j < i)
+		      {
+			AV *subs = newAV();
+			for (; j < i; j += 2)
+			  {
+			    str = pool_id2str(pool,  subq.elements[j]);
+			    av_push(subs, newSVpv(str, 0));
+			  }
+			str = pool_id2str(pool, lastsrc);
+		        (void)hv_store(subpacks, str, strlen(str), newRV_noinc((SV *)subs), 0);
+		      }
+		    lastsrc = subq.elements[i + 1];
+		  }
+	      }
+	    queue_free(&subq);
+	    EXTEND(SP, 5);
+	    sv = newRV_noinc((SV *)dep2pkg);
+	    PUSHs(sv);
+	    sv = newRV_noinc((SV *)dep2src);
+	    PUSHs(sv);
+	    sv = newRV_noinc((SV *)depislocal);
+	    PUSHs(sv);
+	    sv = newRV_noinc((SV *)notready);
+	    PUSHs(sv);
+	    sv = newRV_noinc((SV *)subpacks);
+	    PUSHs(sv);
 	}
 
 void
