@@ -1,3 +1,9 @@
+libbssolv-perl (0.4.0-6) unstable; urgency=low
+
+  * add preparehashes pool method to speed up the scheduler
+
+ -- Michael Schroeder <mls@suse.de>  Tue, 15 Mar 2016 14:56:22 +0100
+
 libbssolv-perl (0.4.0-5) unstable; urgency=low
 
   * make checksums pass our writefilter
