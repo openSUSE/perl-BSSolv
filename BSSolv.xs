@@ -2370,15 +2370,15 @@ preparehashes(BSSolv::pool pool, char *prp, SV *gctxprpnotreadysv = 0)
 	    queue_free(&subq);
 	    EXTEND(SP, 5);
 	    sv = newRV_noinc((SV *)dep2pkg);
-	    PUSHs(sv);
+	    PUSHs(sv_2mortal(sv));
 	    sv = newRV_noinc((SV *)dep2src);
-	    PUSHs(sv);
+	    PUSHs(sv_2mortal(sv));
 	    sv = newRV_noinc((SV *)depislocal);
-	    PUSHs(sv);
+	    PUSHs(sv_2mortal(sv));
 	    sv = newRV_noinc((SV *)notready);
-	    PUSHs(sv);
+	    PUSHs(sv_2mortal(sv));
 	    sv = newRV_noinc((SV *)subpacks);
-	    PUSHs(sv);
+	    PUSHs(sv_2mortal(sv));
 	}
 
 void
