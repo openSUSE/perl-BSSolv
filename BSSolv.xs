@@ -1385,6 +1385,2018 @@ subpack_sort_cmp(const void *ap, const void *bp, void *dp)
   return r ? r : a[0] - b[0];
 }
 
+/* This is an OpenSSL-compatible implementation of the RSA Data Security,
+ * Inc. MD5 Message-Digest Algorithm.
+ *
+ * Written by Solar Designer <solar@openwall.com> in 2001, and placed in
+ * the public domain. */
+
+#define F(x, y, z)                      ((z) ^ ((x) & ((y) ^ (z))))
+#define G(x, y, z)                      ((y) ^ ((z) & ((x) ^ (y))))
+#define H(x, y, z)                      ((x) ^ (y) ^ (z))
+#define I(x, y, z)                      ((y) ^ ((x) | ~(z)))
+
+#define STEP(f, a, b, c, d, x, t, s) \
+        (a) += f((b), (c), (d)) + (x) + (t); \
+        (a) = (((a) << (s)) | (((a) & 0xffffffff) >> (32 - (s)))); \
+        (a) += (b);
+
+#if defined(__i386__) || defined(__vax__)
+#define SET(n) \
+        (*(MD5_u32plus *)&ptr[(n) * 4])
+#define GET(n) \
+        SET(n)
+#else
+#define SET(n) \
+        (ctx->block[(n)] = \
+        (MD5_u32plus)ptr[(n) * 4] | \
+        ((MD5_u32plus)ptr[(n) * 4 + 1] << 8) | \
+        ((MD5_u32plus)ptr[(n) * 4 + 2] << 16) | \
+        ((MD5_u32plus)ptr[(n) * 4 + 3] << 24))
+#define GET(n) \
+        (ctx->block[(n)])
+#endif
+
+typedef unsigned long MD5_u32plus;
+
+typedef struct {
+        MD5_u32plus lo, hi;
+        MD5_u32plus a, b, c, d;
+        unsigned char buffer[64];
+        MD5_u32plus block[16];
+} MD5_CTX;
+
+/*
+ * This processes one or more 64-byte data blocks, but does NOT update
+ * the bit counters.  There're no alignment requirements.
+ */
+static void *md5_body(MD5_CTX *ctx, void *data, unsigned long size)
+{
+        unsigned char *ptr;
+        MD5_u32plus a, b, c, d;
+        MD5_u32plus saved_a, saved_b, saved_c, saved_d;
+
+        ptr = data;
+
+        a = ctx->a;
+        b = ctx->b;
+        c = ctx->c;
+        d = ctx->d;
+
+        do {
+                saved_a = a;
+                saved_b = b;
+                saved_c = c;
+                saved_d = d;
+
+/* Round 1 */
+                STEP(F, a, b, c, d, SET(0), 0xd76aa478, 7)
+                STEP(F, d, a, b, c, SET(1), 0xe8c7b756, 12)
+                STEP(F, c, d, a, b, SET(2), 0x242070db, 17)
+                STEP(F, b, c, d, a, SET(3), 0xc1bdceee, 22)
+                STEP(F, a, b, c, d, SET(4), 0xf57c0faf, 7)
+                STEP(F, d, a, b, c, SET(5), 0x4787c62a, 12)
+                STEP(F, c, d, a, b, SET(6), 0xa8304613, 17)
+                STEP(F, b, c, d, a, SET(7), 0xfd469501, 22)
+                STEP(F, a, b, c, d, SET(8), 0x698098d8, 7)
+                STEP(F, d, a, b, c, SET(9), 0x8b44f7af, 12)
+                STEP(F, c, d, a, b, SET(10), 0xffff5bb1, 17)
+                STEP(F, b, c, d, a, SET(11), 0x895cd7be, 22)
+                STEP(F, a, b, c, d, SET(12), 0x6b901122, 7)
+                STEP(F, d, a, b, c, SET(13), 0xfd987193, 12)
+                STEP(F, c, d, a, b, SET(14), 0xa679438e, 17)
+                STEP(F, b, c, d, a, SET(15), 0x49b40821, 22)
+
+/* Round 2 */
+                STEP(G, a, b, c, d, GET(1), 0xf61e2562, 5)
+                STEP(G, d, a, b, c, GET(6), 0xc040b340, 9)
+                STEP(G, c, d, a, b, GET(11), 0x265e5a51, 14)
+                STEP(G, b, c, d, a, GET(0), 0xe9b6c7aa, 20)
+                STEP(G, a, b, c, d, GET(5), 0xd62f105d, 5)
+                STEP(G, d, a, b, c, GET(10), 0x02441453, 9)
+                STEP(G, c, d, a, b, GET(15), 0xd8a1e681, 14)
+                STEP(G, b, c, d, a, GET(4), 0xe7d3fbc8, 20)
+                STEP(G, a, b, c, d, GET(9), 0x21e1cde6, 5)
+                STEP(G, d, a, b, c, GET(14), 0xc33707d6, 9)
+                STEP(G, c, d, a, b, GET(3), 0xf4d50d87, 14)
+                STEP(G, b, c, d, a, GET(8), 0x455a14ed, 20)
+                STEP(G, a, b, c, d, GET(13), 0xa9e3e905, 5)
+                STEP(G, d, a, b, c, GET(2), 0xfcefa3f8, 9)
+                STEP(G, c, d, a, b, GET(7), 0x676f02d9, 14)
+                STEP(G, b, c, d, a, GET(12), 0x8d2a4c8a, 20)
+
+/* Round 3 */
+                STEP(H, a, b, c, d, GET(5), 0xfffa3942, 4)
+                STEP(H, d, a, b, c, GET(8), 0x8771f681, 11)
+                STEP(H, c, d, a, b, GET(11), 0x6d9d6122, 16)
+                STEP(H, b, c, d, a, GET(14), 0xfde5380c, 23)
+                STEP(H, a, b, c, d, GET(1), 0xa4beea44, 4)
+                STEP(H, d, a, b, c, GET(4), 0x4bdecfa9, 11)
+                STEP(H, c, d, a, b, GET(7), 0xf6bb4b60, 16)
+                STEP(H, b, c, d, a, GET(10), 0xbebfbc70, 23)
+                STEP(H, a, b, c, d, GET(13), 0x289b7ec6, 4)
+                STEP(H, d, a, b, c, GET(0), 0xeaa127fa, 11)
+                STEP(H, c, d, a, b, GET(3), 0xd4ef3085, 16)
+                STEP(H, b, c, d, a, GET(6), 0x04881d05, 23)
+                STEP(H, a, b, c, d, GET(9), 0xd9d4d039, 4)
+                STEP(H, d, a, b, c, GET(12), 0xe6db99e5, 11)
+                STEP(H, c, d, a, b, GET(15), 0x1fa27cf8, 16)
+                STEP(H, b, c, d, a, GET(2), 0xc4ac5665, 23)
+
+/* Round 4 */
+                STEP(I, a, b, c, d, GET(0), 0xf4292244, 6)
+                STEP(I, d, a, b, c, GET(7), 0x432aff97, 10)
+                STEP(I, c, d, a, b, GET(14), 0xab9423a7, 15)
+                STEP(I, b, c, d, a, GET(5), 0xfc93a039, 21)
+                STEP(I, a, b, c, d, GET(12), 0x655b59c3, 6)
+                STEP(I, d, a, b, c, GET(3), 0x8f0ccc92, 10)
+                STEP(I, c, d, a, b, GET(10), 0xffeff47d, 15)
+                STEP(I, b, c, d, a, GET(1), 0x85845dd1, 21)
+                STEP(I, a, b, c, d, GET(8), 0x6fa87e4f, 6)
+                STEP(I, d, a, b, c, GET(15), 0xfe2ce6e0, 10)
+                STEP(I, c, d, a, b, GET(6), 0xa3014314, 15)
+                STEP(I, b, c, d, a, GET(13), 0x4e0811a1, 21)
+                STEP(I, a, b, c, d, GET(4), 0xf7537e82, 6)
+                STEP(I, d, a, b, c, GET(11), 0xbd3af235, 10)
+                STEP(I, c, d, a, b, GET(2), 0x2ad7d2bb, 15)
+                STEP(I, b, c, d, a, GET(9), 0xeb86d391, 21)
+
+                a += saved_a;
+                b += saved_b;
+                c += saved_c;
+                d += saved_d;
+
+                ptr += 64;
+        } while (size -= 64);
+
+        ctx->a = a;
+        ctx->b = b;
+        ctx->c = c;
+        ctx->d = d;
+
+        return ptr;
+}
+
+static void md5_init(MD5_CTX *ctx)
+{
+        ctx->a = 0x67452301;
+        ctx->b = 0xefcdab89;
+        ctx->c = 0x98badcfe;
+        ctx->d = 0x10325476;
+        ctx->lo = 0;
+        ctx->hi = 0;
+}
+
+static void md5_update(MD5_CTX *ctx, void *data, unsigned long size)
+{
+        MD5_u32plus saved_lo;
+        unsigned long used, free;
+
+        saved_lo = ctx->lo;
+        if ((ctx->lo = (saved_lo + size) & 0x1fffffff) < saved_lo)
+                ctx->hi++;
+        ctx->hi += size >> 29;
+
+        used = saved_lo & 0x3f;
+
+        if (used) {
+                free = 64 - used;
+
+                if (size < free) {
+                        memcpy(&ctx->buffer[used], data, size);
+                        return;
+                }
+
+                memcpy(&ctx->buffer[used], data, free);
+                data = (unsigned char *)data + free;
+                size -= free;
+                md5_body(ctx, ctx->buffer, 64);
+        }
+
+        if (size >= 64) {
+                data = md5_body(ctx, data, size & ~(unsigned long)0x3f);
+                size &= 0x3f;
+        }
+
+        memcpy(ctx->buffer, data, size);
+}
+
+static void md5_final(MD5_CTX *ctx, unsigned char *result)
+{
+        unsigned long used, free;
+        used = ctx->lo & 0x3f;
+        ctx->buffer[used++] = 0x80;
+        free = 64 - used;
+        if (free < 8) {
+                memset(&ctx->buffer[used], 0, free);
+                md5_body(ctx, ctx->buffer, 64);
+                used = 0;
+                free = 64;
+        }
+        memset(&ctx->buffer[used], 0, free - 8);
+        ctx->lo <<= 3;
+        ctx->buffer[56] = ctx->lo;
+        ctx->buffer[57] = ctx->lo >> 8;
+        ctx->buffer[58] = ctx->lo >> 16;
+        ctx->buffer[59] = ctx->lo >> 24;
+        ctx->buffer[60] = ctx->hi;
+        ctx->buffer[61] = ctx->hi >> 8;
+        ctx->buffer[62] = ctx->hi >> 16;
+        ctx->buffer[63] = ctx->hi >> 24;
+        md5_body(ctx, ctx->buffer, 64);
+        result[0] = ctx->a;
+        result[1] = ctx->a >> 8;
+        result[2] = ctx->a >> 16;
+        result[3] = ctx->a >> 24;
+        result[4] = ctx->b;
+        result[5] = ctx->b >> 8;
+        result[6] = ctx->b >> 16;
+        result[7] = ctx->b >> 24;
+        result[8] = ctx->c;
+        result[9] = ctx->c >> 8;
+        result[10] = ctx->c >> 16;
+        result[11] = ctx->c >> 24;
+        result[12] = ctx->d;
+        result[13] = ctx->d >> 8;
+        result[14] = ctx->d >> 16;
+        result[15] = ctx->d >> 24;
+        memset(ctx, 0, sizeof(*ctx));
+}
+
+static unsigned int buz_noise[256] =
+{
+  0x9be502a4U, 0xba7180eaU, 0x324e474fU, 0x0aab8451U, 0x0ced3810U,
+  0x2158a968U, 0x6bbd3771U, 0x75a02529U, 0x41f05c14U, 0xc2264b87U,
+  0x1f67b359U, 0xcd2d031dU, 0x49dc0c04U, 0xa04ae45cU, 0x6ade28a7U,
+  0x2d0254ffU, 0xdec60c7cU, 0xdef5c084U, 0x0f77ffc8U, 0x112021f6U,
+  0x5f6d581eU, 0xe35ea3dfU, 0x3216bfb4U, 0xd5a3083dU, 0x7e63e9cdU,
+  0xaa9208f6U, 0xda3f3978U, 0xfe0e2547U, 0x09dfb020U, 0xd97472c5U,
+  0xbbce2edeU, 0x121aebd2U, 0x0e9fdbebU, 0x7b6f5d9cU, 0x84938e43U,
+  0x30694f2dU, 0x86b7a7f8U, 0xefaf5876U, 0x263812e6U, 0xb6e48ddfU,
+  0xce8ed980U, 0x4df591e1U, 0x75257b35U, 0x2f88dcffU, 0xa461fe44U,
+  0xca613b4dU, 0xd9803f73U, 0xea056205U, 0xccca7a89U, 0x0f2dbb07U,
+  0xc53e359eU, 0xe80d0137U, 0x2b2d2a5dU, 0xcfc1391aU, 0x2bb3b6c5U,
+  0xb66aea3cU, 0x00ea419eU, 0xce5ada84U, 0xae1d6712U, 0x12f576baU,
+  0x117fcbc4U, 0xa9d4c775U, 0x25b3d616U, 0xefda65a8U, 0xaff3ef5bU,
+  0x00627e68U, 0x668d1e99U, 0x088d0eefU, 0xf8fac24dU, 0xe77457c7U,
+  0x68d3beb4U, 0x921d2acbU, 0x9410eac9U, 0xd7f24399U, 0xcbdec497U,
+  0x98c99ae1U, 0x65802b2cU, 0x81e1c3c4U, 0xa130bb09U, 0x17a87badU,
+  0xa70367d6U, 0x148658d4U, 0x02f33377U, 0x8620d8b6U, 0xbdac25bdU,
+  0xb0a6de51U, 0xd64c4571U, 0xa4185ba0U, 0xa342d70fU, 0x3f1dc4c1U,
+  0x042dc3ceU, 0x0de89f43U, 0xa69b1867U, 0x3c064e11U, 0xad1e2c3eU,
+  0x9660e8cdU, 0xd36b09caU, 0x4888f228U, 0x61a9ac3cU, 0xd9561118U,
+  0x3532797eU, 0x71a35c22U, 0xecc1376cU, 0xab31e656U, 0x88bd0d35U,
+  0x423b20ddU, 0x38e4651cU, 0x3c6397a4U, 0x4a7b12d9U, 0x08b1cf33U,
+  0xd0604137U, 0xb035fdb8U, 0x4916da23U, 0xa9349493U, 0xd83daa9bU,
+  0x145f7d95U, 0x868531d6U, 0xacb18f17U, 0x9cd33b6fU, 0x193e42b9U,
+  0x26dfdc42U, 0x5069d8faU, 0x5bee24eeU, 0x5475d4c6U, 0x315b2c0cU,
+  0xf764ef45U, 0x01b6f4ebU, 0x60ba3225U, 0x8a16777cU, 0x4c05cd28U,
+  0x53e8c1d2U, 0xc8a76ce5U, 0x8045c1e6U, 0x61328752U, 0x2ebad322U,
+  0x3444f3e2U, 0x91b8af11U, 0xb0cee675U, 0x55dbff5aU, 0xf7061ee0U,
+  0x27d7d639U, 0xa4aef8c9U, 0x42ff0e4fU, 0x62755468U, 0x1c6ca3f3U,
+  0xe4f522d1U, 0x2765fcb3U, 0xe20c8a95U, 0x3a69aea7U, 0x56ab2c4fU,
+  0x8551e688U, 0xe0bc14c2U, 0x278676bfU, 0x893b6102U, 0xb4f0ab3bU,
+  0xb55ddda9U, 0xa04c521fU, 0xc980088eU, 0x912aeac1U, 0x08519badU,
+  0x991302d3U, 0x5b91a25bU, 0x696d9854U, 0x9ad8b4bfU, 0x41cb7e21U,
+  0xa65d1e03U, 0x85791d29U, 0x89478aa7U, 0x4581e337U, 0x59bae0b1U,
+  0xe0fc9df3U, 0x45d9002cU, 0x7837464fU, 0xda22de3aU, 0x1dc544bdU,
+  0x601d8badU, 0x668b0abcU, 0x7a5ebfb1U, 0x3ac0b624U, 0x5ee16d7dU,
+  0x9bfac387U, 0xbe8ef20cU, 0x8d2ae384U, 0x819dc7d5U, 0x7c4951e7U,
+  0xe60da716U, 0x0c5b0073U, 0xb43b3d97U, 0xce9974edU, 0x0f691da9U,
+  0x4b616d60U, 0x8fa9e819U, 0x3f390333U, 0x6f62fad6U, 0x5a32b67cU,
+  0x3be6f1c3U, 0x05851103U, 0xff28828dU, 0xaa43a56aU, 0x075d7dd5U,
+  0x248c4b7eU, 0x52fde3ebU, 0xf72e2edaU, 0x5da6f75fU, 0x2f5148d9U,
+  0xcae2aeaeU, 0xfda6f3e5U, 0xff60d8ffU, 0x2adc02d2U, 0x1dbdbd4cU,
+  0xd410ad7cU, 0x8c284aaeU, 0x392ef8e0U, 0x37d48b3aU, 0x6792fe9dU,
+  0xad32ddfaU, 0x1545f24eU, 0x3a260f73U, 0xb724ca36U, 0xc510d751U,
+  0x4f8df992U, 0x000b8b37U, 0x292e9b3dU, 0xa32f250fU, 0x8263d144U,
+  0xfcae0516U, 0x1eae2183U, 0xd4af2027U, 0xc64afae3U, 0xe7b34fe4U,
+  0xdf864aeaU, 0x80cc71c5U, 0x0e814df3U, 0x66cc5f41U, 0x853a497aU,
+  0xa2886213U, 0x5e34a2eaU, 0x0f53ba47U, 0x718c484aU, 0xfa0f0b12U,
+  0x33cc59ffU, 0x72b48e07U, 0x8b6f57bcU, 0x29cf886dU, 0x1950955bU,
+  0xcd52910cU, 0x4cecef65U, 0x05c2cbfeU, 0x49df4f6aU, 0x1f4c3f34U,
+  0xfadc1a09U, 0xf2d65a24U, 0x117f5594U, 0xde3a84e6U, 0x48db3024U,
+  0xd10ca9b5U
+};
+
+
+/* 
+ * our delta search blocksize
+ *
+ * smaller gives more hits, but increases the hash size
+ *
+ * must be a multiple of 256
+ * must be in range [256,32767]
+ */
+#define DELTA_BSIZE 1024
+
+/* min store block len, smaller blocks are encoded as direct data */
+#define MIN_BSIZE 32
+
+/* min meta block len, must be >= 10 */
+#define MIN_BSIZE_META 32
+
+/* max meta block len, must be <= DELTA_BSIZE */
+#define MAX_BSIZE_META DELTA_BSIZE
+
+
+/* buzhash by Robert C. Uzgalis */
+/* General hash functions. Technical Report TR-92-01, The University
+   of Hong Kong, 1993 */
+
+static unsigned int buzhash(unsigned char *buf)
+{
+  unsigned int x = 0x83d31df4U;
+  int i;
+  for (i = DELTA_BSIZE ; i != 0; i--)
+    x = (x << 1) ^ (x & (1 << 31) ? 1 : 0) ^ buz_noise[*buf++];
+  return x;
+}
+
+static void md5block(unsigned char *buf, int len, unsigned char *out)
+{
+  MD5_CTX ctx;
+  md5_init(&ctx);
+  md5_update(&ctx, buf, (unsigned long)len);
+  md5_final(&ctx, out);
+}
+
+#define HASHCHAIN_START 7
+#define HASHCHAIN_NEXT(h, hh, mask) (((h) + (hh)++) & (mask))
+
+
+struct deltastore {
+  int fd;				/* file descriptor */
+
+  unsigned long long end;		/* store file size */
+
+  unsigned long long *offsets;		/* the data areas we know about */
+  int noffsets;
+
+  unsigned char *hash;			/* our hash */
+  unsigned int hm;			/* size of hash */
+  unsigned int hf;			/* hash fill */
+  unsigned int hd;			/* entries not in hash */
+
+  int freecnt;				/* free slots in last slot area */
+  int usedcnt;				/* used slots in last slot area */
+  unsigned long long slotsoffset;	/* offset of last slot area */
+};
+
+struct deltaout {
+  FILE *fp;
+  struct deltastore *store;
+
+  /* for block coalescence */
+  unsigned long long oldoffset;
+  unsigned long long oldsize;
+
+  /* for offset encoding */
+  unsigned long long lastoffset;
+
+  /* for meta block creation */
+  int outbuf_do_meta;				/* create meta blocks */
+  unsigned char outbuf[MAX_BSIZE_META + 16];	/* 16 extra bytes for one encoded block */
+  int outbuf_len;
+  /* offset patching */
+  unsigned long long outbuf_startoffset;
+  int outbuf_startoffset_set;
+  int outbuf_set_len1;
+  int outbuf_set_len2;
+  unsigned long long outbuf_set_offset;		/* offset we need to patch in, already encoded */
+};
+
+static inline unsigned long long getu48(unsigned char *d)
+{
+  unsigned long long x = d[0] << 8 | d[1];
+  return (x << 32) | (d[2] << 24 | d[3] << 16 | d[4] << 8 | d[5]);
+}
+
+static inline void putu48(unsigned char *d, unsigned long long x)
+{
+  d[0] = x >> 40;
+  d[1] = x >> 32;
+  d[2] = x >> 24;
+  d[3] = x >> 16;
+  d[4] = x >> 8;
+  d[5] = x;
+}
+
+static inline unsigned int getu32(unsigned char *d)
+{
+  return d[0] << 24 | d[1] << 16 | d[2] << 8 | d[3];
+}
+
+static inline void putu32(unsigned char *d, unsigned int x)
+{
+  d[0] = x >> 24;
+  d[1] = x >> 16;
+  d[2] = x >> 8;
+  d[3] = x;
+}
+
+/**
+ **  store handling
+ **/
+
+static int
+finddataarea(struct deltastore *store, unsigned long long offset)
+{
+  int i;
+  for (i = 0; i < store->noffsets; i += 2)
+    if (offset >= store->offsets[i] && offset < store->offsets[i + 1])
+      return i;
+  return -1;
+}
+
+static void
+adddataarea(struct deltastore *store, unsigned long long start, unsigned long long end)
+{
+  unsigned long long *newoffsets;
+  if (store->noffsets && store->offsets[store->noffsets - 1] == start)
+    {
+      store->offsets[store->noffsets - 1] = end;
+      return;
+    }
+  if (store->offsets)
+    newoffsets = realloc(store->offsets, (store->noffsets + 2) * sizeof(unsigned long long));
+  else
+    newoffsets = malloc((store->noffsets + 2) * sizeof(unsigned long long));
+  if (!newoffsets)
+    return;
+  newoffsets[store->noffsets++] = start;
+  newoffsets[store->noffsets++] = end;
+  store->offsets = newoffsets;
+}
+
+static int
+addslotarea(struct deltastore *store, int cnt)
+{
+  unsigned char *slots;
+  if (!cnt || cnt > 65535)
+    return 0;
+  if ((store->end & 4095) != 0)		/* pad to multiple of 4096 */
+    {
+      char pad[4096];
+      int l = 4096 - (store->end & 4095);
+      memset(pad, 0, l);
+      if (pwrite(store->fd, pad, l, store->end) != l)
+	{
+	  perror("pwrite pad next slotsarea");
+	  return 0;
+	}
+      store->end += l;
+    }
+  if (store->end + (cnt + 1) * 16 >= (1LL << 48))
+    return 0;				/* store too big! */
+  slots = calloc(cnt + 1, 16);
+  if (!slots)
+    return 0;
+  memcpy(slots, "OBSDELT", 8);
+  slots[8] = cnt >> 8;
+  slots[9] = cnt;
+  /* write pointer to next slot area */
+  if (store->end)
+    {
+      putu48(slots + 10, store->end);
+      if (pwrite(store->fd, slots, 16, store->slotsoffset) != 16)
+	{
+	  perror("pwrite update next slotsarea");
+	  free(slots);
+	  return 0;
+	}
+      memset(slots + 10, 0, 6);
+    }
+  if (pwrite(store->fd, slots, (cnt + 1) * 16, store->end) != (cnt + 1) * 16)
+    {
+      perror("pwrite new slotarea");
+      free(slots);
+      return 0;
+    }
+  free(slots);
+  store->slotsoffset = store->end;
+  store->end += (cnt + 1) * 16;
+  store->freecnt = cnt;
+  store->usedcnt = 0;
+  return 1;
+}
+
+/* 
+ * add a new block to the store.
+ * returns the store offset, 0 on error
+ */
+static unsigned long long
+putinstore(struct deltastore *store, unsigned char *buf, int size, unsigned char *md5, unsigned int hx)
+{
+  unsigned char md5buf[16];
+  unsigned char hp[16];
+  unsigned long long offset;
+
+  unsigned char *hash;
+  unsigned int h, hh, hm;
+
+  if (size > DELTA_BSIZE)
+    return 0;
+
+  if (store->freecnt == 0 && !addslotarea(store, 4095))
+    return 0;
+
+  /* write data */
+  offset = store->end;
+  if (offset + size >= (1LL << 48))
+    return 0;			/* store too big! */
+  if (pwrite(store->fd, buf, size, store->end) != size)
+    {
+      perror("pwrite data");
+      return 0;
+    }
+  adddataarea(store, store->end, store->end + size);
+  store->end += size;
+
+  /* write slot */
+  if (!md5)
+    {
+      md5block(buf, size, md5buf);
+      md5 = md5buf;
+    }
+  hp[0] = size >> 8;
+  hp[1] = size;
+  putu48(hp + 2, offset);
+  if (size == DELTA_BSIZE)
+    {
+      if (!hx)
+        hx = buzhash(buf);
+      putu32(hp + 8, hx);
+      memcpy(hp + 12, md5, 4);
+    }
+  else
+    {
+      hp[0] |= 0x80;		/* small block marker */
+      memcpy(hp + 8, md5, 8);
+      hx = getu32(hp + 8);	/* needed later */
+    }
+#if 0
+{
+  int j;
+  printf("NEW SLOT");
+  for (j = 0; j < 16; j++)
+    printf(" %02x", hp[j]);
+  printf("\n");
+}
+#endif
+  if (pwrite(store->fd, hp, 16, store->slotsoffset + (store->usedcnt + 1) * 16) != 16)
+    {
+      perror("pwrite slot");
+      return 0;
+    }
+  store->freecnt--;
+  store->usedcnt++;
+
+  /* update hash */
+  hm = store->hm;
+  hash = store->hash;
+  h = hx & hm;
+  hh = HASHCHAIN_START;
+  while (hash[16 * h] != 0)
+    h = HASHCHAIN_NEXT(h, hh, hm);
+  memcpy(hash + 16 * h, hp, 16);
+  store->hf++;
+  return offset;
+}
+
+/* make sure that we found the correct block */
+static int
+checkstore(struct deltastore *store, unsigned long long offset, unsigned char *buf, int size)
+{
+  unsigned char buf2[4096];
+  while (size)
+    {
+      int l = size > 4096 ? 4096 : size;
+      if (pread(store->fd, buf2, l, offset) != l)
+	return 0;
+      if (memcmp(buf2, buf, l) != 0)
+	return 0;
+      size -= l;
+      buf += l;
+      offset += l;
+    }
+  return 1;
+}
+
+/* 
+ * try to find a (non-rolling) block in the store. If not found, add it.
+ * returns the store offset, 0 on error
+ */
+static unsigned long long
+reuse_or_add_block(struct deltastore *store, unsigned char *buf, int size)
+{
+  unsigned char md5[16];
+  unsigned int h, hh, hm;
+  unsigned char *hash;
+  unsigned long long offset;
+
+  if (!size || size >= DELTA_BSIZE)
+    return 0;		/* only small non-rolling blocks for now */
+  md5block(buf, size, md5);
+  hm = store->hm;
+  hash = store->hash;
+  h = (md5[0] << 24 | md5[1] << 16 | md5[2] << 8 | md5[3]) & hm;
+  hh = HASHCHAIN_START;
+  while (hash[16 * h] != 0)
+    {
+      unsigned char *hp = hash + 16 * h;
+      if (((hp[0] & 0x7f) << 8 | hp[1]) == size && !memcmp(hp + 8, md5, 8))
+	{
+	  offset = getu48(hp + 2);
+	  if (checkstore(store, offset, buf, size))
+	    return offset;
+	}
+      h = HASHCHAIN_NEXT(h, hh, hm);
+    }
+  return putinstore(store, buf, size, md5, 0);
+}
+
+
+/**
+ **  block encoding
+ **/
+
+static int
+encodelonglong(FILE *ofp, unsigned long long x)
+{
+  unsigned long long z = 1;
+  int c;
+  do
+    {
+      z = z << 7 | (x & 127);
+      x >>= 7;
+    }
+  while (x);
+  for (;;)
+    {
+      c = (z & 127) | 128;
+      z >>= 7;
+      if (z == 1)
+	break;
+      if (putc(c, ofp) == EOF)
+	return 0;
+    }
+  if (putc(c ^ 128, ofp) == EOF)
+    return 0;
+  return 1;
+}
+
+static int
+encodelonglong_mem(unsigned char *bp, unsigned long long x)
+{
+  unsigned long long z = 1;
+  int c;
+  int l = 0;
+  do
+    {
+      z = z << 7 | (x & 127);
+      x >>= 7;
+    }
+  while (x);
+  for (;;)
+    {
+      c = (z & 127) | 128;
+      z >>= 7;
+      if (z == 1)
+	break;
+      *bp++ = c;
+      l++;
+    }
+  *bp = c ^ 128;;
+  return l + 1;
+}
+
+
+#if 1
+/* fancy delta conversion */
+static inline unsigned long long
+encodeoffset(unsigned long long oldoffset, unsigned long long offset)
+{
+  if (oldoffset & (1LL << 47))
+    {
+      offset ^= ((1LL << 48) - 1);
+      oldoffset ^= ((1LL << 48) - 1);
+    }
+  if (offset < oldoffset * 2)
+    {
+      if (offset < oldoffset)
+	offset = (oldoffset - offset - 1) << 1 | 1;
+      else
+	offset = (offset - oldoffset) << 1;
+    }
+  return offset;
+}
+
+static inline unsigned long long
+decodeoffset(unsigned long long oldoffset, unsigned long long offset)
+{
+  int neg = oldoffset & (1LL << 47) ? ((1LL << 48) - 1) : 0;
+  oldoffset ^= neg;
+  if (offset < oldoffset * 2)
+    {
+      if (offset & 1)
+	offset = oldoffset - ((offset >> 1) + 1);
+      else
+	offset = oldoffset + (offset >> 1);
+    }
+  return offset ^ neg;
+}
+
+#else
+static inline unsigned long long
+encodeoffset(unsigned long long oldoffset, unsigned long long offset)
+{
+  return oldoffset ^ offset;
+}
+
+static inline unsigned long long
+decodeoffset(unsigned long long oldoffset, unsigned long long offset)
+{
+  return oldoffset ^ offset;
+}
+#endif
+
+static int
+flushoutbuf(struct deltaout *out)
+{
+  if (!out->outbuf_len)
+    return 1;
+  if (out->outbuf_len >= MAX_BSIZE_META)
+    return 0;
+
+  if (out->outbuf_len >= MIN_BSIZE_META)
+    {
+      /* put as meta block into store! */
+      int size = out->outbuf_len;
+      unsigned long long offset;
+#if 0
+      printf("META size %d\n", out->outbuf_len);
+#endif
+      offset = reuse_or_add_block(out->store, out->outbuf, size);
+      if (!offset)
+	return 0;
+      /* encode meta block into outbuf */
+      if (out->outbuf_startoffset_set)
+	out->lastoffset = out->outbuf_startoffset;
+      out->outbuf[0] = 15;			/* meta */
+      out->outbuf_len = 1;
+      out->outbuf_len += encodelonglong_mem(out->outbuf + out->outbuf_len, size);
+      out->outbuf_len += encodelonglong_mem(out->outbuf + out->outbuf_len, encodeoffset(out->lastoffset, offset));
+      out->lastoffset = offset + size;
+      out->outbuf_startoffset_set = 0;
+    }
+
+  if (out->outbuf_startoffset_set)
+    {
+      /* tricky: fix up first offset! */
+      unsigned char buf[9];
+      int l = encodelonglong_mem(buf, out->outbuf_set_offset);
+      if (fwrite(out->outbuf, out->outbuf_set_len1, 1, out->fp) != 1)
+	return 0;
+      if (fwrite(buf, l, 1, out->fp) != 1)
+	return 0;
+      if (out->outbuf_set_len2 < out->outbuf_len && fwrite(out->outbuf + out->outbuf_set_len2, out->outbuf_len - out->outbuf_set_len2, 1, out->fp) != 1)
+	return 0;
+    }
+  else if (fwrite(out->outbuf, out->outbuf_len, 1, out->fp) != 1)
+    return 0;
+  out->outbuf_len = 0;
+  out->outbuf_startoffset_set = 0;
+  return 1;
+}
+
+static int
+encodestoreblock_real(struct deltaout *out, unsigned long long offset, unsigned long long size)
+{
+#if 0
+  printf("BLOCK %#llx %llu\n", offset, size);
+#endif
+  if (out->outbuf_do_meta)
+    {
+      int lastlen = out->outbuf_len;
+      int set = out->outbuf_startoffset_set;
+      if (!set)
+	{
+	  out->outbuf_startoffset_set = 1;
+	  out->outbuf_startoffset = out->lastoffset;
+	  out->outbuf_set_offset = encodeoffset(out->lastoffset, offset);
+	  out->lastoffset = 0;
+	}
+      out->outbuf_len += encodelonglong_mem(out->outbuf + out->outbuf_len, out->oldsize + 256);
+      if (!set)
+        out->outbuf_set_len1 = out->outbuf_len;
+      out->outbuf_len += encodelonglong_mem(out->outbuf + out->outbuf_len, encodeoffset(out->lastoffset, offset));
+      if (!set)
+        out->outbuf_set_len2 = out->outbuf_len;
+      if (out->outbuf_len >= DELTA_BSIZE)
+	{
+	  /* buffer too full. revert changes. flush outbuf. retry */
+	  out->outbuf_len = lastlen;
+	  if (!set)
+	    {
+	      out->outbuf_startoffset_set = 0;
+	      out->lastoffset = out->outbuf_startoffset;
+	    }
+	  if (!flushoutbuf(out))
+	    return 0;
+	  return encodestoreblock_real(out, offset, size);
+	}
+    }
+  else
+    {
+      if (!encodelonglong(out->fp, size + 256))
+	return 0;
+      if (!encodelonglong(out->fp, encodeoffset(out->lastoffset, offset)))
+	return 0;
+    }
+  out->lastoffset = offset + size;
+  return 1;
+}
+
+static int
+encodestoreblock(struct deltaout *out, unsigned long long offset, unsigned long long size)
+{
+  if (out->oldoffset)
+    {
+      if (out->oldoffset + out->oldsize == offset)
+	{
+	  out->oldsize += size;
+	  return 1;
+	}
+      if (!encodestoreblock_real(out, out->oldoffset, out->oldsize))
+        return 0;
+    }
+  out->oldoffset = offset;	/* block not yet written */
+  out->oldsize = size;
+  return 1;
+}
+
+static int
+encodedirect(struct deltaout *out, unsigned char *buf, int size)
+{
+  if (!size)
+    return 1;
+  if (size >= 256 - 16)
+    return 0;
+  if (out->oldoffset)
+    {
+      if (!encodestoreblock(out, 0, 0))	/* flush */
+	return 0;
+    }
+#if 0
+  printf("DIRECT %u\n", size);
+#endif
+  if (out->outbuf_do_meta)
+    {
+      if (out->outbuf_len + 1 + size >= DELTA_BSIZE)
+	{
+	  /* buffer too full. flush outbuf */
+	  if (!flushoutbuf(out))
+	    return 0;
+	}
+      out->outbuf[out->outbuf_len++] = 16 + size;
+      memcpy(out->outbuf + out->outbuf_len, buf, size);
+      out->outbuf_len += size;
+    }
+  else
+    {
+      if (putc(16 + size, out->fp) == EOF)
+	return 0;
+      if (fwrite(buf, size, 1, out->fp) != 1)
+	return 0;
+    }
+  return 1;
+}
+
+/**
+ **  the delta algorithm
+ **/
+
+static unsigned long long
+extendblock(struct deltastore *store, FILE *fp, unsigned long long offset, unsigned long long areaend, unsigned long long maxextend)
+{
+  unsigned char buf[1024];
+  int c, i, bufl;
+  unsigned long long extend = 0;
+
+  if (offset >= areaend)
+    return 0;
+  if (areaend - offset < maxextend)
+    maxextend = areaend - offset;
+  if (!maxextend)
+    return 0;
+  i = bufl = 0;
+  for (;;)
+    {
+      if (i == bufl)
+	{
+	  bufl = maxextend > 1024 ? 1024 : maxextend;
+	  if (bufl == 0)
+	    return extend;
+	  if (pread(store->fd, buf, bufl, (off_t)offset) != bufl)
+	    return extend;
+	  offset += bufl;
+	  maxextend -= bufl;
+	  i = 0;
+	}
+      c = getc(fp);
+      if (c == EOF)
+	return extend;
+      if (buf[i++] != c)
+	{
+	  ungetc(c, fp);
+	  return extend;
+	}
+      extend++;
+    }
+}
+
+static unsigned long long
+extendblock_back(struct deltastore *store, unsigned char *data, unsigned long long offset, unsigned long long areastart, unsigned long long maxextend)
+{
+  unsigned char buf[1024];
+  unsigned long long extend = 0;
+  int bufl;
+
+  if (offset <= areastart)
+    return 0;
+  if (offset - areastart < maxextend)
+    maxextend = offset - areastart;
+  if (!maxextend)
+    return 0;
+  bufl = 0;
+  for (;;)
+    {
+      if (bufl == 0)
+	{
+	  bufl = maxextend > 1024 ? 1024 : maxextend;
+	  if (bufl == 0)
+	    return extend;
+	  offset -= bufl;
+	  if (pread(store->fd, buf, bufl, (off_t)offset) != bufl)
+	    return extend;
+	  maxextend -= bufl;
+	}
+      if (*--data != buf[--bufl])
+	return extend;
+      extend++;
+    }
+}
+
+static int
+dosimple(struct deltastore *store, struct deltaout *out, unsigned char *buf, int size)
+{
+  unsigned long long offset;
+
+  while (size >= DELTA_BSIZE)
+    {
+      offset = putinstore(store, buf, DELTA_BSIZE, 0, 0);
+      if (!offset || !encodestoreblock(out, offset, DELTA_BSIZE))
+	return 0;
+      size -= DELTA_BSIZE;
+      buf += DELTA_BSIZE;
+    }
+  if (size < MIN_BSIZE)
+    return encodedirect(out, buf, size);
+  offset = reuse_or_add_block(store, buf, size);
+  if (!offset)
+    return 0;
+  return encodestoreblock(out, offset, size);
+}
+
+static int
+dodelta(struct deltastore *store, FILE *fp, struct deltaout *out, unsigned long long size)
+{
+  unsigned char buf[DELTA_BSIZE * 16];
+  unsigned char md5[16];
+  unsigned long long offset, extendf, extendb;
+  unsigned int h, hh, hm, hx;
+  unsigned char *hash;
+  int c, foundit, bi;
+
+#if 0
+  printf("DODELTA\n");
+#endif
+  hm = store->hm;
+  hash = store->hash;
+  while (size)
+    {
+      if (size < DELTA_BSIZE)
+	{
+	  if (fread(buf, (int)size, 1, fp) != 1)
+	    return 0;
+	  if (!dosimple(store, out, buf, (int)size))
+	    return 0;
+	  break;
+	}
+      /* read a block */
+      bi = 0;
+      if (fread(buf, DELTA_BSIZE, 1, fp) != 1)
+	return 0;
+      size -= DELTA_BSIZE;
+
+      hx = buzhash(buf);
+      foundit = 0;
+
+      /* start rolling */
+      for (;;)
+	{
+	  int md5set = 0;
+	  /* check if the block at (buf + bi) is in the hash */
+#if 0
+	  if (hx != buzhash(buf + bi))
+	    abort();
+#endif
+	  hh = HASHCHAIN_START;
+	  for (h = hx & hm; hash[16 * h] != 0; h = HASHCHAIN_NEXT(h, hh, hm))
+	    {
+	      unsigned char *hp = hash + 16 * h;
+	      /* first check block len */
+	      if (hp[0] != (DELTA_BSIZE >> 8) || hp[1] != (DELTA_BSIZE & 0xff))
+		continue;
+	      /* then check complete hash value */
+	      if (hp[8] != (hx >> 24))
+		continue;
+	      if ((hp[8] << 24 | hp[9] << 16 | hp[10] << 8 | hp[11]) != hx)
+		continue;
+	      /* then check strong hash */
+	      if (!md5set)
+		{
+		  md5block(buf + bi, DELTA_BSIZE, md5);
+		  md5set = 1;
+		}
+	      if (memcmp(hp + 12, md5, 4) != 0)
+		continue;
+	      /* looks good. check data */
+	      offset = getu48(hp + 2);
+	      if (!checkstore(store, offset, buf + bi, DELTA_BSIZE))
+		continue;
+	      /* yes! found block in store! */
+	      /* try to extend found block */
+	      c = finddataarea(store, offset);
+	      extendf = extendb = 0;
+	      if (c >= 0)
+		{
+		  extendf = extendblock(store, fp, offset + DELTA_BSIZE, store->offsets[c + 1], size);
+		  size -= extendf;	/* extended bytes */
+		  extendb = extendblock_back(store, buf + bi, offset, store->offsets[c], bi);
+		  offset -= extendb;
+		  bi -= extendb;
+		}
+	      /* encode data before block */
+	      if (bi)
+		{
+		  if (!dosimple(store, out, buf, bi))
+		    return 0;
+		  bi = 0;
+		}
+	      /* encode */
+	      if (!encodestoreblock(out, offset, DELTA_BSIZE + extendf + extendb))
+		return 0;
+	      foundit = 1;
+	      break;
+	    }
+	  if (foundit)
+	    break;
+
+          /* not found. move block one byte */
+	  if (!size)
+	    {
+	      if (!dosimple(store, out, buf, bi + DELTA_BSIZE))
+		return 0;
+	      break;
+	    }
+	  c = fgetc(fp);
+	  if (c == EOF)
+	    return 0;
+	  size--;
+	  buf[DELTA_BSIZE + bi] = c;
+	  hx = (hx << 1) ^ (hx & (1 << 31) ? 1 : 0) ^ buz_noise[c];
+	  c = buf[bi];
+	  hx ^= buz_noise[c] ^ (0x83d31df4U ^ 0x07a63be9U);
+	  bi++;
+	  if (bi == sizeof(buf) - DELTA_BSIZE)
+	    {
+	      /* trim down, but leave one block for backward extension */
+	      if (!dosimple(store, out, buf, bi - DELTA_BSIZE))
+		return 0;
+	      memcpy(buf, buf + bi - DELTA_BSIZE, 2 * DELTA_BSIZE);
+	      bi = DELTA_BSIZE;
+	    }
+	}
+    }
+  if (!encodestoreblock(out, 0, 0))	/* flush */
+    return 0;
+  if (!flushoutbuf(out))
+    return 0;
+  return 1;
+}
+
+static int
+readdeltastore(struct deltastore *store, int fd, unsigned long long xsize)
+{
+  unsigned char *slots;
+  unsigned char oneslot[16];
+  unsigned long long offset, nextoffset, lastgoodoffset;
+  struct stat st;
+  unsigned long long fsize;
+  unsigned int nslots = 0, hslots;
+  unsigned char *hash;
+  unsigned int hm, h, hh, hf, hd;
+  int isbad = 0;
+  int i, lasti, cnt, maxcnt = 0;
+  unsigned int drop = 0;
+
+  memset(store, 0, sizeof(*store));
+  store->fd = fd;
+  if (fstat(fd, &st))
+    {
+      perror("fstat");
+      return 0;
+    }
+  fsize = (unsigned long long)st.st_size;
+  store->end = fsize;
+
+  /* first pass: find number of used entries */
+  offset = 0;
+  lastgoodoffset = -1;
+  for (;;)
+    {
+      if (offset == fsize)
+	break;
+      if (offset + 16 > fsize)
+	{
+	  fprintf(stderr, "WARNING: slot area exceeds file size!\n");
+	  isbad = 1;
+	  break;
+	}
+      if (pread(fd, oneslot, 16, offset) != 16)
+	return 0;
+      if (memcmp(oneslot, "OBSDELT", 8) != 0)
+	{
+	  fprintf(stderr, "WARNING: slot magic error!\n");
+	  isbad = 1;
+	  break;
+	}
+      cnt = oneslot[8] << 8 | oneslot[9];
+      nextoffset = getu48(oneslot + 10);
+      if (!nextoffset)
+	nextoffset = fsize;
+      offset += (cnt + 1) * 16;
+      if (offset > fsize)
+	{
+	  fprintf(stderr, "WARNING: slot area exceeds file size!\n");
+	  isbad = 1;
+	  break;
+	}
+      nslots += cnt;
+      lastgoodoffset = offset - (cnt + 1) * 16;
+      if (cnt > maxcnt)
+	maxcnt = cnt;
+      if (offset > nextoffset)
+	{
+	  fprintf(stderr, "WARNING: end of slots bigger than nextoffset!\n");
+	  isbad = 1;
+	  break;
+	}
+      offset = nextoffset;
+    }
+
+  if (isbad)
+    {
+      fprintf(stderr, "WARNING: fixing up bad slots!\n");
+      if (lastgoodoffset == -1)
+	{
+	  /* worst case: first slots area damaged */
+	  lastgoodoffset = 0;
+	  memset(oneslot, 0, 16);
+	  memcpy(oneslot, "OBSDELT", 8);
+	  putu48(oneslot + 10, fsize);
+	  if (pwrite(store->fd, oneslot, 16, 0) != 16)
+	    {
+	      perror("pwrite repair first slots area");
+	      return 0;
+	    }
+	}
+      else
+	{
+	  putu48(oneslot + 10, fsize);
+	  if (pwrite(store->fd, oneslot + 10, 6, lastgoodoffset + 10) != 6)
+	    {
+	      perror("pwrite repair bad slots area nextoffset");
+	      return 0;
+	    }
+	}
+    }
+
+  slots = calloc(maxcnt + 1, 16);
+  if (!slots)
+    return 0;
+
+  /* find good hash size and allocate hash */
+  hslots = nslots + xsize / 512;
+  while (hslots & (hslots - 1))
+    hslots = hslots & (hslots - 1);
+  if (hslots < 16384)
+    hslots = 16384;
+  while (hslots > 256 * 1024 * 1024)
+    {
+      /* oh no. max size reached. drop half of slots */
+      hslots >>= 1;
+      drop += (drop ? drop : nslots) / 2;
+    }
+  hslots *= 4;
+  store->hm = hm = hslots - 1;
+  store->hash = hash = calloc(hm + 1, 16);
+  if (!hash)
+    {
+      fprintf(stderr, "could not allocate hash (%u MB)\n", (hm + 1) / (1024 * 1024 / 16) );
+      free(slots);
+      return 0;
+    }
+
+  /* second pass: fill the hash */
+  offset = 0;
+  hf = hd = 0;
+  for (;;)
+    {
+      int toread = 16 * (maxcnt + 1);
+      if (offset >= fsize)
+	break;
+      if (offset + toread > fsize)
+	toread = fsize - offset;
+      if (pread(fd, slots, toread, offset) != toread)
+	{
+	  free(slots);
+	  return 0;
+	}
+      if (memcmp(slots, "OBSDELT", 8) != 0)
+	break;
+      cnt = oneslot[8] << 8 | oneslot[9];
+      offset += 16 * (cnt + 1);
+      nextoffset = getu48(slots + 10);
+      if (!nextoffset)
+	nextoffset = fsize;
+      if (offset > nextoffset)
+	break;
+      if (offset != nextoffset)
+	adddataarea(store, offset, nextoffset);
+      lasti = 0;
+      for (i = 1; i < cnt + 1; i++)
+	if (slots[16 * i])
+	  {
+	    unsigned char *hp = slots + 16 * i;
+	    int len = (hp[0] & 127) << 8 | hp[1];
+	    unsigned long long o = getu48(hp + 2);
+	    lasti = i;
+	    if (drop)
+	      {
+		drop--;
+		hd++;
+	      }
+	    else if (o >= offset && o + len <= nextoffset)
+	      {
+		/* a good one. add to hash. */
+	        h = getu32(hp + 8) & hm;
+		hh = HASHCHAIN_START;
+		while (hash[16 * h] != 0)
+		  h = HASHCHAIN_NEXT(h, hh, hm);
+		memcpy(hash + 16 * h, hp, 16);
+		hf++;
+	      }
+	  }
+      store->slotsoffset = offset - 16 * (cnt + 1);
+      store->freecnt = cnt - lasti;
+      store->usedcnt = lasti;
+      offset = nextoffset;
+    }
+  store->hf = hf;
+  store->hd = hd;
+#if 0
+  printf("readdeltastore: have %d entries, %d dropped, hash size %d\n", hf, hd, hm + 1);
+#endif
+  free(slots);
+  return 1;
+}
+
+static void
+printdeltastorestats(struct deltastore *store)
+{
+  unsigned int buckets[2048];
+  unsigned int hm, hf, hd;
+  unsigned char *hp;
+  int i, j, bc = 16;
+
+  memset(buckets, 0, sizeof(buckets));
+  hm = store->hm;
+  hf = store->hf;
+  hd = store->hd;
+
+  printf("store size: %llu (%u MB)\n", store->end, (unsigned int)(store->end / (1024 * 1024)));
+  printf("hash mask: 0x%x (%u MB hash mem)\n", hm, (unsigned int)(hm / 65536) + 1);
+  printf("hash entries set: %u (%.2f %%)\n", hf, ((double)hf * 100) / ((double)hm + 1));
+  printf("hash entries dropped: %u (%.2f %%)\n", hd, hd ? ((double)hd * 100) / ((double)hf + (double)hd) : 0.);
+  for (hp = store->hash;; hp += 16)
+    {
+      if (hp[0])
+        buckets[((hp[0] & 0x7f) << 8 | hp[1]) / 16]++;
+      if (!hm--)
+	break;
+    }
+  for (i = 2047; i >= 1; i--)
+    if (buckets[i])
+      break;
+  i++;
+  while (i > 16)
+    {
+      for (j = 0; j < i; j += 2)
+	buckets[j / 2] = buckets[j] + buckets[j + 1];
+      i = (i + 1) / 2;
+      bc *= 2;
+    }
+  printf("block stats:\n");
+  for (j = 0; j < i; j++)
+    printf("  size %#6x - %#6x: %10u\n", j * bc, j * bc + bc - 1, buckets[j]);
+  printf("data areas: %d\n", store->noffsets / 2);
+}
+
+static void
+freedeltastore(struct deltastore *store)
+{
+  if (store->hash)
+    free(store->hash);
+  if (store->offsets)
+    free(store->offsets);
+}
+
+static void
+settimes(int fd, struct stat *st)
+{
+  struct timeval tv[2];
+
+  tv[0].tv_sec = st->st_atime;
+  tv[0].tv_usec = 0;
+  tv[1].tv_sec = st->st_mtime;
+  tv[1].tv_usec = 0;
+  futimes(fd, tv);
+}
+
+static int
+checkhexcomp(unsigned char *buf)
+{
+  int i, hexcomp = 0;
+  for (i = 0; i < 110; i++)
+    {
+      int c = *buf++;
+      if (c >= '0' && c <= '9')
+	continue;
+      else if (c >= 'A' && c <= 'F')
+	{
+	  if (!hexcomp)
+	    hexcomp = 1;
+	  if (hexcomp != 1)
+	    break;
+	}
+      else if (c >= 'a' && c <= 'f')
+	{
+	  if (!hexcomp)
+	    hexcomp = 2;
+	  if (hexcomp != 2)
+	    break;
+	}
+      else
+	break;
+    }
+  if (i < 110)
+    return 0;
+  return hexcomp ? hexcomp : 1;
+}
+
+static unsigned int fromhex(unsigned char *hex)
+{
+  int i;
+  unsigned int x = 0;
+  for (i = 0; i < 8; i++, hex++)
+    {
+      if (*hex >= '0' && *hex <= '9')
+	x = x << 4 | (*hex - '0');
+      else if (*hex >= 'a' && *hex <= 'f')
+	x = x << 4 | (*hex - ('a' - 10));
+      else if (*hex >= 'A' && *hex <= 'F')
+	x = x << 4 | (*hex - ('A' - 10));
+    }
+  return x;
+}
+
+static int
+makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsize)
+{
+  unsigned char cpiohead[1024 + 16384];
+  unsigned char oldcpio[1024];
+  int trailerseen = 0;
+  int i, j;
+  struct deltaout out;
+
+  if (fpsize >= (1LL << 40))
+    return 0;
+
+  /* init deltaout struct */
+  memset(&out, 0, sizeof(out));
+  out.fp = ofp;
+  out.store = store;
+  out.outbuf_do_meta = 1;		/* create meta blocks */
+
+  /* write our header */
+  memset(cpiohead, 0, 32);
+  memcpy(cpiohead, "OBScpio", 8);
+  putu48(cpiohead + 10, fpsize);
+  if (fwrite(cpiohead, 16, 1, ofp) != 1)
+    return 0;
+
+  memset(oldcpio, 0, 1024);
+  for (;;)
+    {
+      unsigned long long fsize;
+      unsigned int hsize, nsize;
+      int run;
+      int hexcomp;
+      int noff = 110;
+
+      /* read the header */
+      if (fread(cpiohead, 110, 1, fp) != 1)
+	{
+	  fprintf(stderr, "cpio header read error\n");
+	  return 0;
+	}
+      if (memcmp(cpiohead, "070701", 6) != 0)
+	{
+	  fprintf(stderr, "not a newc cpio archive\n");
+	  return 0;
+	}
+      fsize = fromhex(cpiohead + 54);
+      nsize = fromhex(cpiohead + 94);
+      if (nsize > 16384)
+	{
+	  fprintf(stderr, "filename size too big\n");
+	  return 0;
+	}
+      hsize = noff + nsize;
+      if (hsize & 3)
+	hsize += 4 - (hsize & 3);
+      /* check if we can do hex compression */
+      hexcomp = checkhexcomp(cpiohead);
+      if (hexcomp)
+	{
+	  /* do fancy hex compression */
+	  cpiohead[0] = 0x07;
+	  cpiohead[1] = 0x07;
+	  cpiohead[2] = 0x01;
+	  for (i = 3; i < 55; i += 4)
+	    {
+	      unsigned int x = fromhex(cpiohead + i * 2);
+	      putu32(cpiohead + i, x);
+	    }
+	   noff -= 55;
+	   hsize -= 55;
+	}
+
+#if 0
+      printf("fsize = %d, nsize = %d, hsize = %d\n", fsize, nsize, hsize);
+#endif
+      if (fread(cpiohead + noff, hsize - noff, 1, fp) != 1)
+	{
+	  fprintf(stderr, "cpio header read error\n");
+	  return 0;
+	}
+      if (fsize == 0 && nsize == 11 && !memcmp(cpiohead + noff, "TRAILER!!!", 11))
+	{
+	  trailerseen = 1;
+	  while (hsize < sizeof(cpiohead))
+	    {
+	      int c = getc(fp);
+	      if (c == EOF)
+		break;
+	      cpiohead[hsize++] = c;
+	    }
+	  if (hsize == sizeof(cpiohead))
+	    {
+	      fprintf(stderr, "excess trailer data\n");
+	      return 0;
+	    }
+	}
+      /* write the header */
+      if (putc(2 + hexcomp, ofp) == EOF)
+	return 0;
+      for (i = 0; i < 1024 && i < hsize; i++)
+	{
+	  cpiohead[i] ^= oldcpio[i];
+	  oldcpio[i] ^= cpiohead[i];
+	}
+      run = 0;
+      for (i = 0; i < hsize; i++)
+	{
+	  if (cpiohead[i] == 0)
+	    {
+	      run++;
+	      if (i + 1 < hsize)
+	        continue;
+	    }
+	  while (run)
+	    {
+	      int z = run > 127 ? 127 : run;
+	      if (putc(z, ofp) == EOF)
+		return 0;
+	      run -= z;
+	    }
+	  if (cpiohead[i] == 0)
+	    break;		/* ended in zero */
+	  for (j = i; j < hsize - 1; j++)
+	    if (cpiohead[j] == 0 && cpiohead[j + 1] == 0)
+	      break;
+	  if (j == hsize - 1)
+	    j = hsize;
+	  j -= i;
+	  if (j > 127)
+	    j = 127;
+	  if (putc(j + 128, ofp) == EOF)
+	    return 0;
+	  while (j-- > 0)
+	    {
+	      int z = cpiohead[i++];
+	      if (putc(z, ofp) == EOF)
+		return 0;
+	    }
+	  i--;
+	}
+      if (putc(0, ofp) == EOF)
+	return 0;
+      if (fsize)
+	{
+	  if (!dodelta(store, fp, &out, fsize))
+	    return 0;
+	  if ((fsize & 3) != 0)
+	    {
+	      i = 4 - (fsize & 3);
+	      if (putc(4 + i, ofp) == EOF)
+		return 0;
+	      while (i--)
+		{
+		  if (getc(fp) != 0)
+		    {
+		      fprintf(stderr, "non-zero padding\n");
+		      return 0;
+		    }
+		}
+	    }
+	}
+      if (trailerseen)
+	break;
+    }
+  if (putc(1, ofp) == EOF)
+    return 0;
+  if (fflush(ofp) != 0)
+    return 0;
+  return 1;
+}
+
+static unsigned long long
+expandobscpio_next(FILE *fp)
+{
+  unsigned long long x = 0;
+  int i;
+  for (;;)
+    {
+      i = getc(fp);
+      if (i == EOF)
+	return (unsigned long long)(-1);
+      if ((i & 128) == 0)
+	return x << 7 | i;
+      x = x << 7 | (i ^ 128);
+    }
+}
+
+static unsigned long long
+expandobscpio_next_mem(unsigned char **bp, unsigned int *lp)
+{
+  unsigned long long x = 0;
+  unsigned char *b = *bp;
+  unsigned int l = *lp;
+  int i;
+  for (;;)
+    {
+      if (l == 0)
+	return (unsigned long long)(-1);
+      i = *b++;
+      l--;
+      if ((i & 128) == 0)
+        {
+	  *bp = b;
+	  *lp = l;
+	  return x << 7 | i;
+        }
+      x = x << 7 | (i ^ 128);
+    }
+}
+
+static int
+expandobscpio_data_mem(unsigned char **bp, unsigned int *lp, void *out, unsigned int outlen)
+{
+  if (*lp < outlen)
+    return 0;
+  if (outlen)
+    memcpy(out, *bp, outlen);
+  *bp += outlen;
+  *lp -= outlen;
+  return 1;
+}
+
+static int
+expandcpiohead(FILE *fp, FILE *ofp, unsigned char *cpio, int hexcomp)
+{
+  int l = 0;
+  int zero;
+  for (;;)
+    {
+      int c = getc(fp);
+      if (c == EOF)
+	return 0;
+      if (c == 0)
+	return 1;
+      if (c < 128)
+	zero = 1;
+      else
+	{
+	  zero = 0;
+	  c -= 128;
+	}
+      while (c-- > 0)
+	{
+	  int x = zero ? 0 : getc(fp);
+	  if (x == EOF)
+	    return 0;
+	  if (l < 1024)
+	    {
+	      x ^= cpio[l];
+	      cpio[l++] = x;
+	    }
+	  if (hexcomp && l <= 55)
+	    {
+	      int lettershift = (hexcomp == 1 ? 'A' : 'a') - ('0' + 10);
+	      int x1 = (x >> 4) + '0';
+	      int x2 = (x & 15) + '0';
+	      if (x1 > '9')
+		x1 += lettershift;
+	      if (x2 > '9')
+		x2 += lettershift;
+	      if (putc(x1, ofp) == EOF || putc(x2, ofp) == EOF)
+	        return 0;
+	    }
+	  else if (putc(x, ofp) == EOF)
+	    return 0;
+	}
+    }
+  return 1;
+}
+
+static int
+expandobscpio_fp(FILE *fp, int fdstore, FILE *ofp)
+{
+  unsigned char magic[16];
+  unsigned char metabuf[16384];
+  unsigned char cpio[1024];
+  unsigned long long o, l;
+  struct stat st;
+  unsigned long long oldoffset = 0;
+  unsigned char *meta = 0;
+  unsigned int metal = 0;
+  unsigned long long oldoffset_meta = 0;
+
+  if (!fp || !ofp || fdstore == -1)
+    return 0;
+  if (fstat(fileno(fp), &st))
+    return 0;
+  if (fread(magic, 16, 1, fp) != 1 || memcmp(magic, "OBScpio", 7) != 0)
+    return 0;
+  memset(cpio, 0, sizeof(cpio));
+  for (;;)
+    {
+      if (meta && !metal)
+	{
+          meta = 0;
+	  oldoffset = oldoffset_meta;
+	}
+      if (meta)
+        l = expandobscpio_next_mem(&meta, &metal);
+      else
+        l = expandobscpio_next(fp);
+      if (l == (unsigned long long)(-1))
+	return 0;
+#if 0
+printf("NEXT %d\n", l);
+#endif
+      if (l < 16)
+	{
+	  /* first 16 reserved as instructions */
+	  if (meta)
+	    return 0;
+	  if (l == 1)					/* EOF */
+	    break;
+	  if (l == 2 || l == 3 || l == 4)		/* CPIO */
+	    {
+	      if (!expandcpiohead(fp, ofp, cpio, l - 2))
+		return 0;
+	    }
+	  else if (l == 5 || l == 6 || l == 7)		/* ZERO */
+	    {
+	      l -= 4;
+	      while (l--)
+	        if (putc(0, ofp) == EOF)
+		  return 0;
+	    }
+	  else if (l == 15)				/* META */
+	    {
+	      l = expandobscpio_next(fp);
+	      if (l == (unsigned long long)(-1))
+		return 0;
+	      if (l < 16 || l > sizeof(metabuf))
+		return 0;
+	      o = expandobscpio_next(fp);
+	      if (o == (unsigned long long)(-1))
+		return 0;
+	      o = decodeoffset(oldoffset, o);
+	      oldoffset_meta = o + l;
+	      oldoffset = 0;
+	      if (pread(fdstore, metabuf, (size_t)l, (off_t)o) != (size_t)l)
+		return 0;
+	      metal = (unsigned int)l;
+	      meta = metabuf;
+	    }
+	  else
+	    return 0;
+	}
+      else if (l < 256)
+	{
+	  /* direct bytes */
+	  l -= 16;
+	  if (l)
+	    {
+	      char buf[256];
+	      if (meta)
+		{
+		  if (expandobscpio_data_mem(&meta, &metal, buf, l) != 1)
+		    return 0;
+		}
+	      else if (fread(buf, (int)l, 1, fp) != 1)
+	        return 0;
+	      if (fwrite(buf, (int)l, 1, ofp) != 1)
+	        return 0;
+	    }
+	}
+      else
+	{
+	  /* bytes from the store */
+	  l -= 256;
+	  if (meta)
+	    o = expandobscpio_next_mem(&meta, &metal);
+	  else
+	    o = expandobscpio_next(fp);
+	  if (o == (unsigned long long)(-1))
+	    return 0;
+	  o = decodeoffset(oldoffset, o);
+	  oldoffset = o + l;
+	  while (l)
+	    {
+	      char buf[8192];
+	      size_t count = l > 8192 ? 8192 : l;
+	      if (pread(fdstore, buf, count, (off_t)o) != count)
+	        return 0;
+	      if (fwrite(buf, count, 1, ofp) != 1)
+	        return 0;
+	      o += count;
+	      l -= count;
+	    }
+	}
+    }
+  if (fflush(ofp) != 0)
+    return 0;
+  settimes(fileno(ofp), &st);
+  return 1;
+}
+
+static void
+printobscpioinstr(FILE *fp, int fdstore, int withmeta)
+{
+  unsigned char magic[16];
+  unsigned long long oldoffset = 0, o, l;
+  unsigned char metabuf[16384];
+  unsigned char *meta = 0;
+  unsigned int metal = 0;
+  unsigned long long oldoffset_meta = 0;
+
+  unsigned int stats_cpio = 0;
+  unsigned long long stats_cpio_len = 0;
+  unsigned int stats_direct = 0;
+  unsigned long long stats_direct_len = 0;
+  unsigned int stats_store = 0;
+  unsigned long long stats_store_len = 0;
+  unsigned int stats_zero = 0;
+  unsigned long long stats_zero_len = 0;
+  unsigned int stats_meta = 0;
+  unsigned long long stats_meta_len = 0;
+  unsigned int stats_meta_store = 0;
+  unsigned long long stats_meta_store_len = 0;
+  unsigned int stats_meta_direct = 0;
+  unsigned long long stats_meta_direct_len = 0;
+
+  if (fread(magic, 16, 1, fp) != 1 || memcmp(magic, "OBScpio", 7) != 0)
+    return;
+  for (;;)
+    {
+      if (meta && !metal)
+	{
+          meta = 0;
+	  oldoffset = oldoffset_meta;
+	}
+      if (meta)
+        l = expandobscpio_next_mem(&meta, &metal);
+      else
+        l = expandobscpio_next(fp);
+      if (l == (unsigned long long)(-1))
+        return;
+      if (l < 16)
+	{
+	  if (meta)
+	    return;
+	  if (l == 1)
+	    {
+	      printf("end\n");
+	      break;
+	    }
+	  if (l == 2 || l == 3 || l == 4)	/* CPIO HEADER */
+	    {
+	      printf("cpio%d", (int)l);
+	      stats_cpio++;
+	      for (;;)
+		{
+		  int c = getc(fp);
+		  if (c == EOF)
+		    return;
+		  stats_cpio_len++;
+		  if (c == 0)
+		    break;
+		  if (c < 128)
+		    printf(" [%d]", c);
+		  else
+		    {
+		      c -= 128;
+		      printf(" %d", c);
+		      stats_cpio_len += c;
+		      while (c--)
+		        if (getc(fp) == EOF)
+			  return;
+		    }
+		}
+	      printf("\n");
+	    }
+	  else if (l == 5 || l == 6 || l == 7)	/* ZERO */
+	    {
+	      printf("zero %d\n", (int)l - 4);
+	      stats_zero++;
+	      stats_zero_len += (int)l - 4;
+	    }
+	  else if (l == 15)				/* META */
+	    {
+	      l = expandobscpio_next(fp);
+	      if (l == (unsigned long long)(-1))
+		return;
+	      if (l < 16 || l > sizeof(metabuf))
+		return;
+	      o = expandobscpio_next(fp);
+	      if (o == (unsigned long long)(-1))
+		return;
+	      o = decodeoffset(oldoffset, o);
+	      oldoffset = o + l;
+	      printf("meta %#llx %llu\n", o, l);
+	      stats_meta++;
+	      stats_meta_len += l;
+	      if (withmeta)
+		{
+		  oldoffset_meta = o + l;
+		  oldoffset = 0;
+		  if (pread(fdstore, metabuf, (size_t)l, (off_t)o) != (size_t)l)
+		    return;
+		  metal = (unsigned int)l;
+		  meta = metabuf;
+		}
+	    }
+	  else
+	    return;
+	  continue;
+	}
+      if (meta)
+	printf("    ");
+      if (l < 256)
+	{
+	  l -= 16;
+	  printf("direct %d\n", (int)l);
+	  if (meta)
+	    {
+	      stats_meta_direct++;
+	      stats_meta_direct_len += l;
+	    }
+	  else
+	    {
+	      stats_direct++;
+	      stats_direct_len += l;
+	    }
+	  if (meta)
+	    {
+	      if (l > metal)
+		return;
+	      metal -= l;
+	      meta += l;
+	    }
+	  else
+	    {
+	      while (l--)
+		if (getc(fp) == EOF)
+		  return;
+	    }
+	  continue;
+	}
+      l -= 256;
+      if (meta)
+        o = expandobscpio_next_mem(&meta, &metal);
+      else
+        o = expandobscpio_next(fp);
+      if (o == (unsigned long long)(-1))
+	return;
+      o = decodeoffset(oldoffset, o);
+      oldoffset = o + l;
+      printf("store %#llx %llu\n", o, l);
+      if (meta)
+	{
+	  stats_meta_store++;
+	  stats_meta_store_len += l;
+	}
+      else
+	{
+	  stats_store++;
+	  stats_store_len += l;
+	}
+    }
+  printf("stats cpio %u len %llu\n", stats_cpio, stats_cpio_len);
+  printf("stats direct %u len %llu\n", stats_direct, stats_direct_len);
+  if (withmeta)
+    printf("stats meta_direct %u len %llu\n", stats_meta_direct, stats_meta_direct_len);
+  printf("stats store %u len %llu\n", stats_store, stats_store_len);
+  if (withmeta)
+    printf("stats meta_store %u len %llu\n", stats_meta_store, stats_meta_store_len);
+  printf("stats zero %u len %llu\n", stats_zero, stats_zero_len);
+  printf("stats meta %u len %llu\n", stats_meta, stats_meta_len);
+  if (withmeta)
+    printf("stats instr %u\n", stats_cpio + stats_direct + stats_store + stats_zero + stats_meta + 1 + stats_meta_direct + stats_meta_store);
+  printf("stats file_instr %u\n", stats_cpio + stats_direct + stats_store + stats_zero + stats_meta + 1);
+  printf("stats file_data %lld\n", stats_cpio_len + stats_direct_len);
+  printf("stats file_size %lld\n", (unsigned long long)ftell(fp));
+}
+
+static int
+expandobscpio_fd(int fdin, int fdstore, int fdout)
+{
+  FILE *fp, *ofp;
+  int r;
+
+  lseek(fdin, 0, SEEK_SET);
+  if ((fdin = dup(fdin)) == -1)
+    return 0;
+  if ((fp = fdopen(fdin, "r")) == NULL)
+    {
+      close(fdin);
+      return 0;
+    }
+  if ((fdout = dup(fdout)) == -1)
+    {
+      fclose(fp);
+      return 0;
+    }
+  if ((ofp = fdopen(fdout, "w")) == NULL)
+    {
+      fclose(fp);
+      return 0;
+    }
+  r = expandobscpio_fp(fp, fdstore, ofp);
+  fclose(fp);
+  if (fclose(ofp) != 0)
+    r = 0;
+  return r;
+}
+
 MODULE = BSSolv		PACKAGE = BSSolv
 
 void
@@ -1869,6 +3881,244 @@ thawcache(SV *sv)
 	RETVAL = newRV_noinc(sv);
     OUTPUT:
 	RETVAL
+
+int
+isobscpio(const char *file)
+    CODE:
+	int fd;
+	RETVAL = 0;
+	if ((fd = open(file, O_RDONLY)) != -1) {
+	    unsigned char magic[16];
+	    if (read(fd, magic, 16) == 16 && !memcmp(magic, "OBScpio", 7))
+		RETVAL = 1;
+	    close(fd);
+	}
+    OUTPUT:
+	RETVAL
+
+
+void
+opbscpiostat(const char *file)
+    PPCODE:
+	{
+	    int fd;
+	    struct stat st;
+	    if ((fd = open(file, O_RDONLY)) != -1) {
+		if (!fstat(fd, &st)) {
+		    unsigned char magic[16];
+		    if (read(fd, magic, 16) == 16 && !memcmp(magic, "OBScpio", 7)) {
+			st.st_size = getu48(magic + 10);
+		    }
+		    EXTEND(SP, 10);
+		    PUSHs(&PL_sv_undef);
+		    PUSHs(&PL_sv_undef);
+		    PUSHs(sv_2mortal(newSVuv((UV)st.st_mode)));
+		    PUSHs(sv_2mortal(newSVuv((UV)st.st_nlink)));
+		    PUSHs(&PL_sv_undef);
+		    PUSHs(&PL_sv_undef);
+		    PUSHs(&PL_sv_undef);
+#if IVSIZE > 4
+		    PUSHs(sv_2mortal(newSVuv((UV)st.st_size)));
+#else
+		    PUSHs(sv_2mortal(newSVnv((double)st.st_size)));
+#endif
+		    PUSHs(sv_2mortal(newSVuv((UV)st.st_atime)));
+		    PUSHs(sv_2mortal(newSVuv((UV)st.st_mtime)));
+		    PUSHs(sv_2mortal(newSVuv((UV)st.st_ctime)));
+		}
+		close(fd);
+	    }
+	}
+
+int
+obscpioopen(const char *file, const char *store, SV *gvrv)
+    CODE:
+	int fd;
+	GV *gv;
+	if (!SvROK(gvrv) || SvTYPE(SvRV(gvrv)) != SVt_PVGV) {
+	    croak("obscpioopen needs a GV reference\n");
+	}
+	gv = (GV *)SvRV(gvrv);
+	RETVAL = 0;
+	if ((fd = open(file, O_RDONLY)) != -1) {
+	    unsigned char magic[16];
+	    if (read(fd, magic, 16) == 16 && !memcmp(magic, "OBScpio", 7)) {
+		char template[256];
+		int nfd = -1;
+		int sfd;
+		if ((sfd = open(store, O_RDONLY)) != -1) {
+		    strcpy(template, "/var/tmp/obscpioopen-XXXXXX");
+		    nfd = mkstemp(template);
+		    if (nfd != -1) {
+		        unlink(template);
+		        if (!expandobscpio_fd(fd, sfd, nfd)) {
+			    close(nfd);
+			    nfd = -1;
+		        }
+		    }
+		    close(sfd);
+		}
+		close(fd);
+		fd = nfd;
+	    }
+	    if (fd != -1) {
+		IO * io = GvIOn(gv);
+		PerlIO *fp;
+
+		lseek(fd, 0, SEEK_SET);
+		fp = PerlIO_fdopen(fd, "rb");
+		if (fp) {
+		    IoIFP(io) = fp;
+		    RETVAL = 1;
+		}
+	    }
+	}
+	
+    OUTPUT:
+	RETVAL
+
+int
+expandobscpio(const char *file, const char *store, const char *tmpfile)
+    CODE:
+	{
+	    int fd, nfd, sfd;
+	    RETVAL = 0;
+
+	    unlink(tmpfile);
+	    if ((fd = open(file, O_RDONLY)) != -1) {
+		unsigned char magic[16];
+		if (!(read(fd, magic, 16) == 16 && !memcmp(magic, "OBScpio", 7))) {
+		    close(fd);
+		    fd = -1;
+		    if (link(file, tmpfile) == 0 && (fd = open(tmpfile, O_RDONLY)) != -1) {
+			if (read(fd, magic, 16) == 16 && !memcmp(magic, "OBScpio", 7)) {
+			    unlink(tmpfile);
+			} else {
+			    close(fd);
+			    fd = -1;
+			    RETVAL = 1;
+			}
+		    }
+		}
+		if (fd != -1) {
+		    if ((sfd = open(store, O_RDONLY)) != -1) {
+			if ((nfd = open(tmpfile, O_WRONLY|O_CREAT|O_TRUNC|O_EXCL, 0666)) != -1) {
+			    if (expandobscpio_fd(fd, sfd, nfd))
+				RETVAL = 1;
+			    else
+				unlink(tmpfile);
+			    close(nfd);
+			}
+			close(sfd);
+		    }
+		    close(fd);
+		}
+	    }
+	}
+    OUTPUT:
+	RETVAL
+
+
+int
+makeobscpio(const char *in, const char *store, const char *out)
+    CODE:
+	{
+	    FILE *fpin, *fpout;
+	    struct stat st;
+	    int fdstore;
+	    RETVAL = 0;
+	    if ((fpin = fopen(in, "r")) == 0) {	
+		perror(in);
+	    } else if (fstat(fileno(fpin), &st) != 0) {
+		perror(in);
+	        fclose(fpin);
+	    } else if ((fpout = fopen(out, "w")) == 0) {
+	        perror(out);
+	        fclose(fpin);
+	    } else if ((fdstore = open(store, O_RDWR|O_CREAT, 0666)) == -1) {
+	        perror(store);
+	        fclose(fpin);
+	        fclose(fpout);
+	    } else {
+		int gotlock = 0;
+	        while (!gotlock) {
+		    if (flock(fdstore, LOCK_EX) == 0)
+			gotlock = 1;
+		    else if (errno != EINTR)
+			break;
+		}
+		if (gotlock) {
+		    struct deltastore store;
+		    if (readdeltastore(&store, fdstore, (unsigned long long)st.st_size)) {
+			int r = makedelta(&store, fpin, fpout, (unsigned long long)st.st_size);
+#if 0
+  printf("after makedelta: have %d entries, hash size %d\n", store.hf, store.hm + 1);
+#endif
+			if (fsync(store.fd))
+			  r = 0;
+			freedeltastore(&store);
+			if (r) {
+			    settimes(fileno(fpout), &st);
+			    RETVAL = 1;
+			}
+		    }
+		}
+		close(fdstore);
+	        fclose(fpin);
+	        fclose(fpout);
+	    }
+	}
+    OUTPUT:
+	RETVAL
+
+void
+obscpiostats(const char *store)
+    CODE:
+	{
+	    int fdstore;
+
+	    if ((fdstore = open(store, O_RDWR|O_CREAT, 0666)) == -1)
+	        perror(store);
+	    else {
+		int gotlock = 0;
+		while (!gotlock) {
+		    if (flock(fdstore, LOCK_EX) == 0)
+			gotlock = 1;
+		    else if (errno != EINTR)
+			break;
+		}
+		if (gotlock) {
+		    struct deltastore store;
+		    if (readdeltastore(&store, fdstore, (unsigned long long)0)) {
+			printdeltastorestats(&store);
+			fsync(store.fd);
+			freedeltastore(&store);
+		    }
+		}
+		close(fdstore);
+	    }
+	}
+
+void
+obscpioinstr(const char *file, const char *store = 0)
+    CODE:
+	{
+	    FILE *fp;
+	    int fdstore = -1;
+	    if ((fp = fopen(file, "r")) == 0)
+		perror(file);
+	    else {
+		if (store) {
+		    fdstore = open(store, O_RDONLY);
+		    if (fdstore == -1)
+			perror(store);
+		}
+		printobscpioinstr(fp, fdstore, fdstore == -1 ? 0 : 1);
+		fclose(fp);
+		if (fdstore != -1)
+		    close(fdstore);
+	    }
+	}
 
 
 MODULE = BSSolv		PACKAGE = BSSolv::pool		PREFIX = pool
