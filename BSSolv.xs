@@ -2793,6 +2793,14 @@ static unsigned int fromhex(unsigned char *hex)
   return x;
 }
 
+static void
+magic_inode_increment(unsigned char *cpio)
+{
+  unsigned int inode = getu32(cpio + 3);
+  if (inode)
+    putu32(cpio + 3, inode + 1);
+}
+
 static int
 makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsize)
 {
@@ -2897,6 +2905,8 @@ makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsi
 	  cpiohead[i] ^= oldcpio[i];
 	  oldcpio[i] ^= cpiohead[i];
 	}
+      if (hexcomp)
+	magic_inode_increment(oldcpio);
       run = 0;
       for (i = 0; i < hsize; i++)
 	{
@@ -3026,7 +3036,7 @@ expandcpiohead(FILE *fp, FILE *ofp, unsigned char *cpio, int hexcomp)
       if (c == EOF)
 	return 0;
       if (c == 0)
-	return 1;
+	break;
       if (c < 128)
 	zero = 1;
       else
@@ -3060,6 +3070,8 @@ expandcpiohead(FILE *fp, FILE *ofp, unsigned char *cpio, int hexcomp)
 	    return 0;
 	}
     }
+  if (hexcomp)
+    magic_inode_increment(cpio);
   return 1;
 }
 
