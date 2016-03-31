@@ -1693,6 +1693,9 @@ static unsigned int buz_noise[256] =
 /* min store block len, smaller blocks are encoded as direct data */
 #define MIN_BSIZE 32
 
+/* min store block len for the borders, must be >= MIN_BSIZE */
+#define MIN_BSIZE_BORDER 64
+
 /* min meta block len, must be >= 10 */
 #define MIN_BSIZE_META 32
 
@@ -1701,6 +1704,7 @@ static unsigned int buz_noise[256] =
 
 /* number of slots per data area */
 #define SLOTS_PER_AREA	4095
+
 
 /* buzhash by Robert C. Uzgalis */
 /* General hash functions. Technical Report TR-92-01, The University
@@ -2388,6 +2392,63 @@ dosimple(struct deltastore *store, struct deltaout *out, unsigned char *buf, int
   return encodestoreblock(out, offset, size);
 }
 
+
+static unsigned long long
+left_border_magic(struct deltastore *store, unsigned char *blk, int size, unsigned long long soffset, int ssize, int *msize)
+{
+  unsigned char sblk[DELTA_BSIZE];
+  int i, j, l, m;
+  int besti = -1, bestl = 0;
+  if (pread(store->fd, sblk, ssize, (off_t)soffset) != ssize)
+    return 0;
+  /* find as much of blk in sblk as possible */
+  for (i = 0, m = ssize; i < ssize - MIN_BSIZE_BORDER; i++, m--)
+    if (blk[0] == sblk[i])
+      {
+        for (j = l = 0; j < size && j < m; j++, l++)
+	  if (blk[j] != sblk[i + j])
+	    break;
+        if (l > bestl)
+	  {
+	    bestl = l;
+	    besti = i;
+	  }
+      }
+  if (bestl < 0)
+    return 0;
+  *msize = bestl;
+  return soffset + besti;
+}
+
+static unsigned long long
+right_border_magic(struct deltastore *store, unsigned char *blk, int size, unsigned long long soffset, int ssize, int *msize)
+{
+  unsigned char sblk[DELTA_BSIZE];
+  int i, j, l, m;
+  int besti = -1, bestl = 0;
+  if (pread(store->fd, sblk, ssize, (off_t)soffset) != ssize)
+    return 0;
+  /* find as much of blk in sblk as possible */
+  for (i = ssize - 1, m = ssize; i >= MIN_BSIZE_BORDER; i--, m--)
+    if (blk[size - 1] == sblk[i])
+      {
+        for (j = l = 0; j < size && j < m; j++, l++)
+	  if (blk[size - 1 - j] != sblk[i - j])
+	    break;
+        if (l > bestl)
+	  {
+	    bestl = l;
+	    besti = i;
+	  }
+      }
+  if (bestl < 0)
+    return 0;
+  *msize = bestl;
+  return soffset + besti - bestl + 1;
+}
+
+#define DO_BORDER_MAGIC
+
 static int
 dodelta(struct deltastore *store, FILE *fp, struct deltaout *out, unsigned long long size)
 {
@@ -2397,6 +2458,7 @@ dodelta(struct deltastore *store, FILE *fp, struct deltaout *out, unsigned long 
   unsigned int h, hh, hm, hx;
   unsigned char *hash;
   int c, foundit, bi;
+  int firstblock = 1;
 
 #if 0
   printf("DODELTA\n");
@@ -2468,6 +2530,28 @@ dodelta(struct deltastore *store, FILE *fp, struct deltaout *out, unsigned long 
 		  bi -= extendb;
 		}
 	      /* encode data before block */
+#ifdef DO_BORDER_MAGIC
+	      if (c >= 0 && bi >= MIN_BSIZE_BORDER && firstblock && (bi >= DELTA_BSIZE || !is_in_store(store, buf, bi)))
+		{
+		  /* do magic border processing */
+		  unsigned long bmagic =  offset - store->offsets[c];
+		  if (bmagic > DELTA_BSIZE)
+		    bmagic = DELTA_BSIZE;
+		  if (bmagic >= MIN_BSIZE_BORDER)
+		    {
+		      int msize = 0;
+		      unsigned long long moffset = left_border_magic(store, buf, bi, offset - bmagic, bmagic, &msize);
+		      if (moffset && msize > MIN_BSIZE_BORDER)
+			{
+			  if (!encodestoreblock(out, moffset, msize))
+			    return 0;
+			  if (msize < bi)
+			    memmove(buf, buf + msize, bi - msize);
+			  bi -= msize;
+			}
+		    }
+		}
+#endif
 	      if (bi)
 		{
 		  if (!dosimple(store, out, buf, bi))
@@ -2477,6 +2561,41 @@ dodelta(struct deltastore *store, FILE *fp, struct deltaout *out, unsigned long 
 	      /* encode */
 	      if (!encodestoreblock(out, offset, DELTA_BSIZE + extendf + extendb))
 		return 0;
+#ifdef DO_BORDER_MAGIC
+	      if (c >= 0 && size < DELTA_BSIZE && size >= MIN_BSIZE_BORDER)
+		{
+		  /* do magic right border processing */
+		  offset += DELTA_BSIZE + extendf + extendb;
+		  bi = size;
+		  if (fread(buf, bi, 1, fp) != 1)
+		    return 0;
+		  if (!is_in_store(store, buf, bi) && store->offsets[c + 1] > offset)
+		    {
+		      unsigned long bmagic = store->offsets[c + 1] - offset;
+		      if (bmagic > DELTA_BSIZE)
+			bmagic = DELTA_BSIZE;
+		      if (bmagic >= MIN_BSIZE_BORDER)
+			{
+			  int msize = 0;
+			  unsigned long long moffset = right_border_magic(store, buf, bi, offset, bmagic, &msize);
+			  if (moffset && msize > MIN_BSIZE_BORDER)
+			    {
+			      if (msize < bi)
+				{
+				  if (!dosimple(store, out, buf, bi - msize))
+				    return 0;
+				}
+			      if (!encodestoreblock(out, moffset, msize))
+				return 0;
+			      bi = 0;
+			    }
+			}
+		    }
+		  if (bi && !dosimple(store, out, buf, bi))
+		    return 0;
+		  size = 0;
+		}
+#endif
 	      foundit = 1;
 	      break;
 	    }
@@ -2506,8 +2625,10 @@ dodelta(struct deltastore *store, FILE *fp, struct deltaout *out, unsigned long 
 		return 0;
 	      memcpy(buf, buf + bi - DELTA_BSIZE, 2 * DELTA_BSIZE);
 	      bi = DELTA_BSIZE;
+	      firstblock = 0;
 	    }
 	}
+      firstblock = 0;
     }
   if (!encodestoreblock(out, 0, 0))	/* flush */
     return 0;
