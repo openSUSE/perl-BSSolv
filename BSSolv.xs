@@ -1699,6 +1699,8 @@ static unsigned int buz_noise[256] =
 /* max meta block len, must be <= DELTA_BSIZE */
 #define MAX_BSIZE_META DELTA_BSIZE
 
+/* number of slots per data area */
+#define SLOTS_PER_AREA	4095
 
 /* buzhash by Robert C. Uzgalis */
 /* General hash functions. Technical Report TR-92-01, The University
@@ -1727,6 +1729,7 @@ static void md5block(unsigned char *buf, int len, unsigned char *out)
 
 struct deltastore {
   int fd;				/* file descriptor */
+  int rdonly;				/* store is read only */
 
   unsigned long long end;		/* store file size */
 
@@ -1835,6 +1838,8 @@ addslotarea(struct deltastore *store, int cnt)
   unsigned char *slots;
   if (!cnt || cnt > 65535)
     return 0;
+  if (store->rdonly)
+    return 0;
   if ((store->end & 4095) != 0)		/* pad to multiple of 4096 */
     {
       char pad[4096];
@@ -1895,10 +1900,12 @@ putinstore(struct deltastore *store, unsigned char *buf, int size, unsigned char
   unsigned char *hash;
   unsigned int h, hh, hm;
 
-  if (size > DELTA_BSIZE)
+  if (!size || size > DELTA_BSIZE)
     return 0;
 
-  if (store->freecnt == 0 && !addslotarea(store, 4095))
+  if (store->rdonly)
+    return 0;
+  if (store->freecnt == 0 && !addslotarea(store, SLOTS_PER_AREA))
     return 0;
 
   /* write data */
@@ -2016,6 +2023,18 @@ reuse_or_add_block(struct deltastore *store, unsigned char *buf, int size)
   return putinstore(store, buf, size, md5, 0);
 }
 
+static unsigned long long
+is_in_store(struct deltastore *store, unsigned char *buf, int size)
+{
+  unsigned long long offset;
+  if (!size || size >= DELTA_BSIZE)
+    return 0;
+  /* hack */
+  store->rdonly++;
+  offset = reuse_or_add_block(store, buf, size);
+  store->rdonly--;
+  return offset;
+}
 
 /**
  **  block encoding
@@ -2498,7 +2517,7 @@ dodelta(struct deltastore *store, FILE *fp, struct deltaout *out, unsigned long 
 }
 
 static int
-readdeltastore(struct deltastore *store, int fd, unsigned long long xsize)
+readdeltastore(struct deltastore *store, int fd, int rdonly, unsigned long long xsize)
 {
   unsigned char *slots;
   unsigned char oneslot[16];
@@ -2514,6 +2533,7 @@ readdeltastore(struct deltastore *store, int fd, unsigned long long xsize)
 
   memset(store, 0, sizeof(*store));
   store->fd = fd;
+  store->rdonly = rdonly;
   if (fstat(fd, &st))
     {
       perror("fstat");
@@ -2567,7 +2587,7 @@ readdeltastore(struct deltastore *store, int fd, unsigned long long xsize)
       offset = nextoffset;
     }
 
-  if (isbad)
+  if (isbad && !store->rdonly)
     {
       fprintf(stderr, "WARNING: fixing up bad slots!\n");
       if (lastgoodoffset == -1)
@@ -2626,6 +2646,8 @@ readdeltastore(struct deltastore *store, int fd, unsigned long long xsize)
   for (;;)
     {
       int toread = 16 * (maxcnt + 1);
+      if (isbad && lastgoodoffset == -1)
+	break;
       if (offset >= fsize)
 	break;
       if (offset + toread > fsize)
@@ -2673,6 +2695,8 @@ readdeltastore(struct deltastore *store, int fd, unsigned long long xsize)
       store->slotsoffset = offset - 16 * (cnt + 1);
       store->freecnt = cnt - lasti;
       store->usedcnt = lasti;
+      if (isbad && lastgoodoffset == store->slotsoffset)
+	break;
       offset = nextoffset;
     }
   store->hf = hf;
@@ -4061,7 +4085,7 @@ makeobscpio(const char *in, const char *store, const char *out)
 		}
 		if (gotlock) {
 		    struct deltastore store;
-		    if (readdeltastore(&store, fdstore, (unsigned long long)st.st_size)) {
+		    if (readdeltastore(&store, fdstore, 0, (unsigned long long)st.st_size)) {
 			int r = makedelta(&store, fpin, fpout, (unsigned long long)st.st_size);
 #if 0
   printf("after makedelta: have %d entries, hash size %d\n", store.hf, store.hm + 1);
@@ -4089,7 +4113,7 @@ obscpiostats(const char *store)
 	{
 	    int fdstore;
 
-	    if ((fdstore = open(store, O_RDWR|O_CREAT, 0666)) == -1)
+	    if ((fdstore = open(store, O_RDONLY)) == -1)
 	        perror(store);
 	    else {
 		int gotlock = 0;
@@ -4101,7 +4125,7 @@ obscpiostats(const char *store)
 		}
 		if (gotlock) {
 		    struct deltastore store;
-		    if (readdeltastore(&store, fdstore, (unsigned long long)0)) {
+		    if (readdeltastore(&store, fdstore, 1, (unsigned long long)0)) {
 			printdeltastorestats(&store);
 			fsync(store.fd);
 			freedeltastore(&store);
