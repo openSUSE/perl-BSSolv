@@ -1,4 +1,10 @@
 -------------------------------------------------------------------
+Fri Apr  1 16:02:22 CEST 2016 - mls@suse.de
+
+- update to version 0.27.0 (perl module 0.07 version)
+  * add delta storage support
+
+-------------------------------------------------------------------
 Tue Mar 15 14:55:22 CET 2016 - mls@suse.de
 
 - update to version 0.26.0 (perl module 0.06 version)

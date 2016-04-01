@@ -6,7 +6,7 @@ require Exporter;
 
 our @ISA = qw(Exporter);
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 require XSLoader;
 
