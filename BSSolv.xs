@@ -3921,7 +3921,7 @@ isobscpio(const char *file)
 
 
 void
-opbscpiostat(const char *file)
+obscpiostat(const char *file)
     PPCODE:
 	{
 	    int fd;
@@ -4136,7 +4136,7 @@ makeobscpio(const char *in, const char *store, const char *out)
 	RETVAL
 
 void
-obscpiostats(const char *store)
+obscpiostorestats(const char *store)
     CODE:
 	{
 	    int fdstore;
