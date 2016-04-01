@@ -2856,6 +2856,7 @@ makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsi
       int run;
       int hexcomp;
       int noff = 110;
+      int zero;
 
       /* read the header */
       if (fread(cpiohead, 110, 1, fp) != 1)
@@ -2919,6 +2920,10 @@ makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsi
 	      return 0;
 	    }
 	}
+      /* check trailing zero */
+      for (zero = 0; zero < 4; zero++)
+	if (cpiohead[hsize - 1 - zero] != 0)
+	  break;
       /* write the header */
       if (putc(2 + hexcomp, ofp) == EOF)
 	return 0;
@@ -2930,6 +2935,7 @@ makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsi
       if (hexcomp)
 	magic_inode_increment(oldcpio);
       run = 0;
+      hsize -= zero;
       for (i = 0; i < hsize; i++)
 	{
 	  if (cpiohead[i] == 0)
@@ -2953,8 +2959,8 @@ makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsi
 	  if (j == hsize - 1)
 	    j = hsize;
 	  j -= i;
-	  if (j > 127)
-	    j = 127;
+	  if (j > 123)
+	    j = 123;
 	  if (putc(j + 128, ofp) == EOF)
 	    return 0;
 	  while (j-- > 0)
@@ -2965,7 +2971,7 @@ makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsi
 	    }
 	  i--;
 	}
-      if (putc(0, ofp) == EOF)
+      if (putc(zero ? zero + 251 : 0, ofp) == EOF)
 	return 0;
       if (fsize)
 	{
@@ -3061,6 +3067,11 @@ expandcpiohead(FILE *fp, FILE *ofp, unsigned char *cpio, int hexcomp)
 	break;
       if (c < 128)
 	zero = 1;
+      else if (c >= 252)
+	{
+	  zero = -1;
+	  c -= 251;
+	}
       else
 	{
 	  zero = 0;
@@ -3073,7 +3084,8 @@ expandcpiohead(FILE *fp, FILE *ofp, unsigned char *cpio, int hexcomp)
 	    return 0;
 	  if (l < 1024)
 	    {
-	      x ^= cpio[l];
+	      if (zero >= 0)
+	        x ^= cpio[l];
 	      cpio[l++] = x;
 	    }
 	  if (hexcomp && l <= 55)
@@ -3091,6 +3103,8 @@ expandcpiohead(FILE *fp, FILE *ofp, unsigned char *cpio, int hexcomp)
 	  else if (putc(x, ofp) == EOF)
 	    return 0;
 	}
+      if (zero < 0)
+	break;
     }
   if (hexcomp)
     magic_inode_increment(cpio);
@@ -3282,9 +3296,17 @@ printobscpioinstr(FILE *fp, int fdstore, int withmeta)
 		    return;
 		  stats_cpio_len++;
 		  if (c == 0)
-		    break;
+		    {
+		      printf(" (0)");
+		      break;
+		    }
 		  if (c < 128)
 		    printf(" [%d]", c);
+		  else if (c >= 252)
+		    {
+		      printf(" (%d)", c - 251);
+		      break;
+		    }
 		  else
 		    {
 		      c -= 128;
