@@ -1,3 +1,9 @@
+libbssolv-perl (0.4.0-8) unstable; urgency=low
+
+  * fix typo, rename obscpiostats to obscpiostorestats
+
+ -- Michael Schroeder <mls@suse.de>  Fri, 1 Apr 2016 16:43:22 +0200
+
 libbssolv-perl (0.4.0-7) unstable; urgency=low
 
   * add delta storage support
