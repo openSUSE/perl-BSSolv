@@ -2849,7 +2849,7 @@ makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsi
     return 0;
 
   memset(oldcpio, 0, 1024);
-  for (;;)
+  while (!trailerseen)
     {
       unsigned long long fsize;
       unsigned int hsize, nsize;
@@ -2992,8 +2992,6 @@ makedelta(struct deltastore *store, FILE *fp, FILE *ofp, unsigned long long fpsi
 		}
 	    }
 	}
-      if (trailerseen)
-	break;
     }
   if (putc(1, ofp) == EOF)
     return 0;
