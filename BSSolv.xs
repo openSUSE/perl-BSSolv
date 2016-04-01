@@ -2080,7 +2080,7 @@ encodelonglong_mem(unsigned char *bp, unsigned long long x)
 
 
 #if 1
-/* fancy delta conversion */
+/* fancy delta conversion, seems to work better than the simple xor */
 static inline unsigned long long
 encodeoffset(unsigned long long oldoffset, unsigned long long offset)
 {
@@ -2186,6 +2186,10 @@ encodestoreblock_real(struct deltaout *out, unsigned long long offset, unsigned 
   if (out->outbuf_do_meta)
     {
       int lastlen = out->outbuf_len;
+      /* the following code is needed as we want to use a lastoffset of
+       * zero if this ends up in a meta instruction. So we encode with
+       * lastoffset zero but also store the real lastoffset and byte offsets,
+       * in order to fix up the offset in flushbuf */
       int set = out->outbuf_startoffset_set;
       if (!set)
 	{
@@ -2200,6 +2204,7 @@ encodestoreblock_real(struct deltaout *out, unsigned long long offset, unsigned 
       out->outbuf_len += encodelonglong_mem(out->outbuf + out->outbuf_len, encodeoffset(out->lastoffset, offset));
       if (!set)
         out->outbuf_set_len2 = out->outbuf_len;
+
       if (out->outbuf_len >= DELTA_BSIZE)
 	{
 	  /* buffer too full. revert changes. flush outbuf. retry */
@@ -2225,6 +2230,9 @@ encodestoreblock_real(struct deltaout *out, unsigned long long offset, unsigned 
   return 1;
 }
 
+/* encode a store block instruction
+ * we delay the real encoding so that we can join adjacent blocks
+ */
 static int
 encodestoreblock(struct deltaout *out, unsigned long long offset, unsigned long long size)
 {
@@ -2243,6 +2251,8 @@ encodestoreblock(struct deltaout *out, unsigned long long offset, unsigned long 
   return 1;
 }
 
+/* encode a direct data instruction
+ */
 static int
 encodedirect(struct deltaout *out, unsigned char *buf, int size)
 {
@@ -2484,14 +2494,14 @@ dodelta(struct deltastore *store, FILE *fp, struct deltaout *out, unsigned long 
 	  size--;
 	  buf[DELTA_BSIZE + bi] = c;
 	  hx = (hx << 1) ^ (hx & (1 << 31) ? 1 : 0) ^ buz_noise[c];
-	  c = buf[bi];
+	  c = buf[bi++];
 	  hx ^= buz_noise[c] ^ (0x83d31df4U ^ 0x07a63be9U);
-	  bi++;
 	  if (bi == sizeof(buf) - DELTA_BSIZE)
 	    {
 	      /* trim down, but leave one block for backward extension */
 	      if (!dosimple(store, out, buf, bi - DELTA_BSIZE))
 		return 0;
+	      /* no overlap as the buffer is >= 4 * DELTA_BSIZE */
 	      memcpy(buf, buf + bi - DELTA_BSIZE, 2 * DELTA_BSIZE);
 	      bi = DELTA_BSIZE;
 	    }
@@ -2580,8 +2590,7 @@ readdeltastore(struct deltastore *store, int fd, int rdonly, unsigned long long 
       fprintf(stderr, "WARNING: fixing up bad slots!\n");
       if (lastgoodoffset == -1)
 	{
-	  /* worst case: first slots area damaged */
-	  lastgoodoffset = 0;
+	  /* worst case: first slots area is damaged */
 	  memset(oneslot, 0, 16);
 	  memcpy(oneslot, "OBSDELT", 8);
 	  putu48(oneslot + 10, fsize);
@@ -2600,6 +2609,7 @@ readdeltastore(struct deltastore *store, int fd, int rdonly, unsigned long long 
 	      return 0;
 	    }
 	}
+      isbad = 0;
     }
 
   slots = calloc(maxcnt + 1, 16);
@@ -2611,8 +2621,8 @@ readdeltastore(struct deltastore *store, int fd, int rdonly, unsigned long long 
   while (hslots & (hslots - 1))
     hslots = hslots & (hslots - 1);
   if (hslots < 16384)
-    hslots = 16384;
-  while (hslots > 256 * 1024 * 1024)
+    hslots = 16384;		/* 1 MByte min mem */
+  while (hslots > 128 * 1024 * 1024)	/* 8 GByte max mem */
     {
       /* oh no. max size reached. drop half of slots */
       hslots >>= 1;
@@ -2623,7 +2633,7 @@ readdeltastore(struct deltastore *store, int fd, int rdonly, unsigned long long 
   store->hash = hash = calloc(hm + 1, 16);
   if (!hash)
     {
-      fprintf(stderr, "could not allocate hash (%u MB)\n", (hm + 1) / (1024 * 1024 / 16) );
+      fprintf(stderr, "could not allocate hash (%u MB)\n", (hm + 1) / (1024 * 1024 / 16));
       free(slots);
       return 0;
     }
@@ -3026,7 +3036,7 @@ expandobscpio_next_mem(unsigned char **bp, unsigned int *lp)
 }
 
 static int
-expandobscpio_data_mem(unsigned char **bp, unsigned int *lp, void *out, unsigned int outlen)
+expandobscpio_direct_mem(unsigned char **bp, unsigned int *lp, void *out, unsigned int outlen)
 {
   if (*lp < outlen)
     return 0;
@@ -3088,7 +3098,7 @@ expandcpiohead(FILE *fp, FILE *ofp, unsigned char *cpio, int hexcomp)
 }
 
 static int
-expandobscpio_fp(FILE *fp, int fdstore, FILE *ofp)
+expandobscpio(FILE *fp, int fdstore, FILE *ofp)
 {
   unsigned char magic[16];
   unsigned char metabuf[16384];
@@ -3172,7 +3182,7 @@ printf("NEXT %d\n", l);
 	      char buf[256];
 	      if (meta)
 		{
-		  if (expandobscpio_data_mem(&meta, &metal, buf, l) != 1)
+		  if (expandobscpio_direct_mem(&meta, &metal, buf, l) != 1)
 		    return 0;
 		}
 	      else if (fread(buf, (int)l, 1, fp) != 1)
@@ -3388,37 +3398,6 @@ printobscpioinstr(FILE *fp, int fdstore, int withmeta)
   printf("stats file_instr %u\n", stats_cpio + stats_direct + stats_store + stats_zero + stats_meta + 1);
   printf("stats file_data %lld\n", stats_cpio_len + stats_direct_len);
   printf("stats file_size %lld\n", (unsigned long long)ftell(fp));
-}
-
-static int
-expandobscpio_fd(int fdin, int fdstore, int fdout)
-{
-  FILE *fp, *ofp;
-  int r;
-
-  lseek(fdin, 0, SEEK_SET);
-  if ((fdin = dup(fdin)) == -1)
-    return 0;
-  if ((fp = fdopen(fdin, "r")) == NULL)
-    {
-      close(fdin);
-      return 0;
-    }
-  if ((fdout = dup(fdout)) == -1)
-    {
-      fclose(fp);
-      return 0;
-    }
-  if ((ofp = fdopen(fdout, "w")) == NULL)
-    {
-      fclose(fp);
-      return 0;
-    }
-  r = expandobscpio_fp(fp, fdstore, ofp);
-  fclose(fp);
-  if (fclose(ofp) != 0)
-    r = 0;
-  return r;
 }
 
 MODULE = BSSolv		PACKAGE = BSSolv
@@ -3955,12 +3934,15 @@ opbscpiostat(const char *file)
 	}
 
 int
-obscpioopen(const char *file, const char *store, SV *gvrv)
+obscpioopen(const char *file, const char *store, SV *gvrv, const char *tmpdir = 0)
     CODE:
 	int fd;
 	GV *gv;
 	if (!SvROK(gvrv) || SvTYPE(SvRV(gvrv)) != SVt_PVGV) {
 	    croak("obscpioopen needs a GV reference\n");
+	}
+	if (tmpdir && strlen(tmpdir) > 200) {
+	    croak("tmpdir too long\n");
 	}
 	gv = (GV *)SvRV(gvrv);
 	RETVAL = 0;
@@ -3971,18 +3953,41 @@ obscpioopen(const char *file, const char *store, SV *gvrv)
 		int nfd = -1;
 		int sfd;
 		if ((sfd = open(store, O_RDONLY)) != -1) {
-		    strcpy(template, "/var/tmp/obscpioopen-XXXXXX");
+		    if (tmpdir) {
+			strcpy(template, tmpdir);
+			strcat(template, "/obscpioopen-XXXXXX");
+		    } else {
+			strcpy(template, "/var/tmp/obscpioopen-XXXXXX");
+		    }
 		    nfd = mkstemp(template);
 		    if (nfd != -1) {
+			FILE *fp = 0, *nfp = 0;
 		        unlink(template);
-		        if (!expandobscpio_fd(fd, sfd, nfd)) {
+			lseek(fd, 0, SEEK_SET);
+			if ((fp = fdopen(fd, "r")) == 0)
+			    close(fd);
+			if ((nfp = fdopen(nfd, "w+")) == 0)
 			    close(nfd);
+		        if (fp && nfp && expandobscpio(fp, sfd, nfp)) {
+			    nfd = dup(nfd);
+			    if (fclose(nfp)) {
+				close(nfd);
+			        nfd = -1;
+			    }
+			    nfp = 0;
+			} else {
 			    nfd = -1;
-		        }
+			}
+			if (fp)
+			    fclose(fp);
+			if (nfp)
+			    fclose(nfp);
+			fd = -1;
 		    }
 		    close(sfd);
 		}
-		close(fd);
+		if (fd != -1)
+		    close(fd);
 		fd = nfd;
 	    }
 	    if (fd != -1) {
@@ -4026,16 +4031,31 @@ expandobscpio(const char *file, const char *store, const char *tmpfile)
 		}
 		if (fd != -1) {
 		    if ((sfd = open(store, O_RDONLY)) != -1) {
-			if ((nfd = open(tmpfile, O_WRONLY|O_CREAT|O_TRUNC|O_EXCL, 0666)) != -1) {
-			    if (expandobscpio_fd(fd, sfd, nfd))
-				RETVAL = 1;
-			    else
+			FILE *fp;
+			lseek(fd, 0, SEEK_SET);
+			if ((fp = fdopen(fd, "r")) == 0)
+			    close(fd);
+			if (fp && (nfd = open(tmpfile, O_WRONLY|O_CREAT|O_TRUNC|O_EXCL, 0666)) != -1) {
+			    FILE *nfp;
+			    if ((nfp = fdopen(nfd, "w")) == 0)
+				close(nfd);
+			    if (nfp && expandobscpio(fp, sfd, nfp)) {
+				if (!fclose(nfp))
+				    RETVAL = 1;
+				else
+				    unlink(tmpfile);
+				nfp = 0;
+			    } else
 				unlink(tmpfile);
-			    close(nfd);
+			    if (nfp)
+				fclose(nfp);
 			}
+		        if (fp)
+			  fclose(fp);
 			close(sfd);
+		    } else {
+		      close(fd);
 		    }
-		    close(fd);
 		}
 	    }
 	}
