@@ -3872,6 +3872,66 @@ gen_meta(AV *subp, ...)
 	    solv_free(lines);
 	}
 
+void
+add_meta(AV *new_meta, SV *sv, const char *bin, const char *packid = 0)
+    PPCODE:
+	{
+	    const char *p, *np;
+	    char *buf;
+	    size_t l, bufl, binl, packidl;
+	    int first = 1;
+	    if (SvROK(sv) && SvTYPE(SvRV(sv)) == SVt_PVAV) {
+		AV *av = (AV *)SvRV(sv);
+		SV **svp = av_fetch(av, 0, 0);
+		sv = svp ? *svp : 0;
+	    }
+	    if (!sv)
+		XSRETURN_EMPTY;
+	    p = SvPV_nolen(sv);
+	    binl = strlen(bin);
+	    bufl = binl + 256;
+	    buf = malloc(bufl);
+	    if (!buf) {
+		croak("out of mem\n");
+		XSRETURN_EMPTY;
+	    }
+	    packidl = packid ? strlen(packid) : 0;
+	    for (;;) {
+		np = strchr(p, '\n');
+		l = np ? np - p : strlen(p);
+		if (l > 34) {
+		    if (l + binl + 1 + 1 > bufl) {
+			bufl = l + binl + 256;
+			buf = realloc(buf, bufl);
+			if (!buf) {
+			    croak("out of mem\n");
+			    XSRETURN_EMPTY;
+			}
+		    }
+		    strncpy(buf, p, 34);
+		    strcpy(buf + 34, bin);
+		    buf[34 + binl] = '/';
+		    strncpy(buf + 34 + binl + 1, p + 34, l - 34);
+		    l += binl + 1;
+		    buf[l] = 0;
+		    if (first) {
+			if (packidl && l > packidl + 1 && buf[l - packidl - 1] == '/' && !strcmp(buf + l - packidl, packid)) {
+			    free(buf);
+			    XSRETURN_EMPTY;
+			}
+			l = 34 + binl;
+			buf[l] = 0;
+			first = 0;
+		    }
+		    av_push(new_meta, newSVpvn(buf, l));
+		}
+		if (!np)
+		    break;
+		p = np + 1;
+	    }
+	    free(buf);
+	}
+
 SV *
 thawcache(SV *sv)
     CODE:
