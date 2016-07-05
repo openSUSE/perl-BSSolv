@@ -1,4 +1,10 @@
 -------------------------------------------------------------------
+Tue Jul  5 13:26:09 CEST 2016 - mls@suse.de
+
+- update to version 0.29.0 (perl module 0.09 version)
+  * support add_meta helper method
+
+-------------------------------------------------------------------
 Fri Apr  1 16:43:22 CEST 2016 - mls@suse.de
 
 - update to version 0.28.0 (perl module 0.08 version)

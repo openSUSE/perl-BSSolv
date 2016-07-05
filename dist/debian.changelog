@@ -1,3 +1,9 @@
+libbssolv-perl (0.4.0-9) unstable; urgency=low
+
+  * support add_meta helper method
+
+ -- Michael Schroeder <mls@suse.de>  Tue, 5 Jul 2016 13:26:09 +0200
+
 libbssolv-perl (0.4.0-8) unstable; urgency=low
 
   * fix typo, rename obscpiostats to obscpiostorestats
