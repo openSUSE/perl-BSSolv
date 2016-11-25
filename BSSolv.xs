@@ -46,6 +46,8 @@ typedef struct _Expander {
   char *debugstr;
   int debugstrl;
   int debugstrf;
+
+  int userecommendsforchoices;
 } Expander;
 
 typedef Pool *BSSolv__pool;
@@ -1103,6 +1105,43 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
 		break;
 	    }
 	}
+
+      /* prioritize recommended packages. */
+      if (qq.count > 1 && xp->userecommendsforchoices && pool->solvables[who].recommends)
+	{
+	  Solvable *t = pool->solvables + who;
+	  Id *rec;
+	  Queue qr;
+	  Id q, p, reccomended;
+	  int i;
+
+	  queue_init(&qr);
+
+	  for (i = 0; i < qq.count; i++)
+	    {
+	      rec = t->repo->idarraydata + t->recommends;
+	      q = qq.elements[i];
+
+	      while ((p = *rec++) != 0)
+		{
+		  if (!strncmp(pool_id2str(pool, p), pool_id2str(pool, pool->solvables[q].name), 32))
+		    {
+		      queue_push(&qr, q);
+		    }
+		}
+	    }
+
+	  if (qr.count > 0)
+	    {
+	      queue_empty(&qq);
+	      for (i = 0; i < qr.count; i++)
+		{
+		  queue_push(&qq, qr.elements[i]);
+		}
+	    }
+	  /* if qr == 0, do not touch qq: nothing recommended */
+	}
+
       if (qq.count > 1)
 	{
 	  queue_push(&cerrors, ERROR_CHOICE);
@@ -5288,6 +5327,29 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 	    sv = get_sv("Build::expand_dbg", FALSE);
 	    if (sv && SvTRUE(sv))
 	      xp->debug = 1;
+	    svp = hv_fetch(config, "buildflags", 10, 0);
+	    sv = svp ? *svp : 0;
+	    if (sv && SvROK(sv) && SvTYPE(SvRV(sv)) == SVt_PVAV)
+	      {
+		AV *av = (AV *)SvRV(sv);
+		      xp->userecommendsforchoices = 1;
+		for (i = 0; i <= av_len(av); i++)
+		  {
+		    char *s;
+		    STRLEN slen;
+
+		    svp = av_fetch(av, i, 0);
+		    if (!svp)
+		      continue;
+		    sv = *svp;
+		    s = SvPV(sv, slen);
+		    if (!s)
+		      continue;
+
+		    if (!strncasecmp("userecommendsforchoices", s, 23) && SvTRUE(sv))
+		      xp->userecommendsforchoices = 1;
+		  }
+	      }
 	    RETVAL = xp;
 	}
     OUTPUT:
