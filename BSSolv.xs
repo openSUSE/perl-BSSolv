@@ -740,6 +740,28 @@ expander_updateconflictsinfo(Expander *xp, Queue *conflictsinfo, int *cidone, Qu
   *cidone = out->count;
 }
 
+static void
+expander_updaterecommendedmap(Expander *xp, Map *recommended, int *recdone, Queue *out)
+{
+  Pool *pool = xp->pool;
+
+  int i;
+  Id p, pp, rec, *recp;
+  for (i = *recdone; i < out->count; i++)
+    {
+      Solvable *s;
+      s = pool->solvables + out->elements[i];
+      if (s->recommends)
+	{
+          MAPEXP(recommended, pool->nsolvables);
+          for (recp = s->repo->idarraydata + s->recommends; (rec = *recp++) != 0; )
+	    FOR_PROVIDES(p, pp, rec)
+	      MAPSET(recommended, p);
+	}
+    }
+  *recdone = out->count;
+}
+
 static inline int
 findconflictsinfo(Queue *conflictsinfo, Id p)
 {
@@ -766,16 +788,20 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
   Queue todo, errors, cerrors, qq, posfoundq;
   Map installed;
   Map conflicts;
+  Map recommended;
   Queue conflictsinfo;
-  int cidone;
+  int cidone, recdone;
   Solvable *s;
   Id q, p, pp;
   int i, j, nerrors, doamb, ambcnt;
   Id id, who, whon, pn;
   Id conflprov, conflprovpc;
+  int haverecommended = 0;
+  int haverecommended_done = 0;
 
   map_init(&installed, pool->nsolvables);
   map_init(&conflicts, 0);
+  map_init(&recommended, 0);
   queue_init(&conflictsinfo);
   queue_init(&todo);
   queue_init(&qq);
@@ -785,6 +811,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
 
   queue_empty(out);
   cidone = 0;
+  recdone = 0;
 
   if (inconfl)
     {
@@ -871,11 +898,26 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
       who = queue_shift(&todo);
       if (ambcnt == 0)
 	{
-	  if (doamb)
+	  /* end of pass */
+	  if (doamb >= 2)
 	    break;	/* amb pass had no progress, stop */
+	  doamb = xp->userecommendsforchoices ? doamb + 1 : 3;
+	  if (doamb == 1 && !haverecommended)
+	    {
+	      for (i = haverecommended_done; i < out->count; i++)
+		if (pool->solvables[out->elements[i]].recommends)
+		  haverecommended = 1;
+	      haverecommended_done = out->count;
+	      if (!haverecommended)
+		doamb = 3;
+	    }
 	  if (xp->debug)
-	    expander_dbg(xp, "now doing undecided dependencies\n");
-	  doamb = 1;	/* start amb pass */
+	    {
+	      if (doamb == 2)
+	        expander_dbg(xp, "now doing undecided dependencies with recommends\n");
+	      else
+	        expander_dbg(xp, "now doing undecided dependencies\n");
+	    }
 	  ambcnt = todo.count;
 	}
       else
@@ -1106,40 +1148,24 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
 	    }
 	}
 
-      /* prioritize recommended packages. */
-      if (qq.count > 1 && xp->userecommendsforchoices && pool->solvables[who].recommends)
+      if (qq.count > 1 && doamb == 1)
 	{
-	  Solvable *t = pool->solvables + who;
-	  Id *rec;
-	  Queue qr;
-	  Id q, p, reccomended;
-	  int i;
+	  queue_push2(&todo, id, who);
+	  continue;
+	}
 
-	  queue_init(&qr);
-
-	  for (i = 0; i < qq.count; i++)
+      /* prioritize recommended packages. */
+      if (qq.count > 1 && doamb == 2)
+	{
+	  expander_updaterecommendedmap(xp, &recommended, &recdone, out);
+	  if (recommended.size)
 	    {
-	      rec = t->repo->idarraydata + t->recommends;
-	      q = qq.elements[i];
-
-	      while ((p = *rec++) != 0)
-		{
-		  if (!strncmp(pool_id2str(pool, p), pool_id2str(pool, pool->solvables[q].name), 32))
-		    {
-		      queue_push(&qr, q);
-		    }
-		}
+	      for (i = j = 0; i < qq.count; i++)
+		if (MAPTST(&recommended, qq.elements[i]))
+		  qq.elements[j++] = qq.elements[i];
+	      if (j)
+		queue_truncate(&qq, j);
 	    }
-
-	  if (qr.count > 0)
-	    {
-	      queue_empty(&qq);
-	      for (i = 0; i < qr.count; i++)
-		{
-		  queue_push(&qq, qr.elements[i]);
-		}
-	    }
-	  /* if qr == 0, do not touch qq: nothing recommended */
 	}
 
       if (qq.count > 1)
@@ -1162,6 +1188,7 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
     }
   map_free(&installed);
   map_free(&conflicts);
+  map_free(&recommended);
   queue_free(&conflictsinfo);
   nerrors = 0;
   if (errors.count || cerrors.count)
@@ -5327,29 +5354,7 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 	    sv = get_sv("Build::expand_dbg", FALSE);
 	    if (sv && SvTRUE(sv))
 	      xp->debug = 1;
-	    svp = hv_fetch(config, "buildflags", 10, 0);
-	    sv = svp ? *svp : 0;
-	    if (sv && SvROK(sv) && SvTYPE(SvRV(sv)) == SVt_PVAV)
-	      {
-		AV *av = (AV *)SvRV(sv);
-		      xp->userecommendsforchoices = 1;
-		for (i = 0; i <= av_len(av); i++)
-		  {
-		    char *s;
-		    STRLEN slen;
-
-		    svp = av_fetch(av, i, 0);
-		    if (!svp)
-		      continue;
-		    sv = *svp;
-		    s = SvPV(sv, slen);
-		    if (!s)
-		      continue;
-
-		    if (!strncasecmp("userecommendsforchoices", s, 23) && SvTRUE(sv))
-		      xp->userecommendsforchoices = 1;
-		  }
-	      }
+	    xp->userecommendsforchoices = 1;
 	    RETVAL = xp;
 	}
     OUTPUT:
