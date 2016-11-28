@@ -14,6 +14,7 @@
 #include "evr.h"
 #include "hash.h"
 #include "chksum.h"
+#include "testcase.h"
 #include "repo_solv.h"
 #include "repo_write.h"
 #include "repo_rpmdb.h"
@@ -149,61 +150,6 @@ id2name(Pool *pool, Id id)
   return id;
 }
 
-static Id
-dep2id(Pool *pool, char *s)
-{
-  char *n;
-  Id id;
-  int flags;
-
-  if ((n = strchr(s, '|')) != 0)
-    {
-      id = dep2id(pool, n + 1);
-      *n = 0;
-      id = pool_rel2id(pool, dep2id(pool, s), id, REL_OR, 1);
-      *n = '|';
-      return id;
-    }
-  while (*s == ' ' || *s == '\t')
-    s++;
-  n = s;
-  while (*s && *s != ' ' && *s != '\t' && *s != '<' && *s != '=' && *s != '>')
-    s++;
-#ifdef REL_MULTIARCH
-  if (s - n > 4 && s[-4] == ':' && !strncmp(s - 4, ":any", 4))
-    {
-      id = pool_strn2id(pool, n, s - n - 4, 1);
-      id = pool_rel2id(pool, id, ARCH_ANY, REL_MULTIARCH, 1);
-    }
-  else
-#endif
-    id = pool_strn2id(pool, n, s - n, 1);
-  if (!*s)
-    return id;
-  while (*s == ' ' || *s == '\t')
-    s++;
-  flags = 0;
-  for (;;s++)
-    {
-      if (*s == '<')
-	flags |= REL_LT;
-      else if (*s == '=')
-	flags |= REL_EQ;
-      else if (*s == '>')
-	flags |= REL_GT;
-      else
-	break;
-    }
-  if (!flags)
-    return id;
-  while (*s == ' ' || *s == '\t')
-    s++;
-  n = s;
-  while (*s && *s != ' ' && *s != '\t')
-    s++;
-  return pool_rel2id(pool, id, pool_strn2id(pool, n, s - n, 1), flags, 1);
-}
-
 static inline Offset
 importdeps(HV *hv, const char *key, int keyl, Repo *repo)
 {
@@ -217,7 +163,7 @@ importdeps(HV *hv, const char *key, int keyl, Repo *repo)
 	{
 	  char *str = avlookupstr(av, i);
 	  if (str)
-	    off = repo_addid_dep(repo, off, dep2id(pool, str), 0);
+	    off = repo_addid_dep(repo, off, testcase_str2dep(pool, str), 0);
 	}
     }
   return off;
@@ -239,64 +185,7 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
     {
       if (id == SOLVABLE_FILEMARKER)
 	break;
-      str = pool_dep2str(pool, id);
-      if (ISRELDEP(id))
-	{
-	  Reldep *rd = GETRELDEP(pool, id);
-	  if (skey == SOLVABLE_CONFLICTS && rd->flags == REL_NAMESPACE && rd->name == NAMESPACE_OTHERPROVIDERS)
-	    {
-	    if (!strncmp(str, "namespace:", 10))
-	      str += 10;
-	    }
-	  if (skey == SOLVABLE_SUPPLEMENTS)
-	    {
-	      if (rd->flags == REL_NAMESPACE && rd->name == NAMESPACE_FILESYSTEM)
-		{
-		  if (!strncmp(str, "namespace:", 10))
-		    str += 10;
-		}
-	      else if (rd->flags == REL_NAMESPACE && rd->name == NAMESPACE_MODALIAS)
-		{
-		  if (!strncmp(str, "namespace:", 10))
-		    str += 10;
-		}
-	      else if (rd->flags == REL_AND)
-		{
-		  /* either packageand chain or modalias */
-		  str = 0;
-		  if (ISRELDEP(rd->evr))
-		    {
-		      Reldep *mrd = GETRELDEP(pool, rd->evr);
-		      if (mrd->flags == REL_NAMESPACE && mrd->name == NAMESPACE_MODALIAS)
-			{
-			  str = pool_tmpjoin(pool, "modalias(", pool_dep2str(pool, rd->name), ":");
-			  str = pool_tmpappend(pool, str, pool_dep2str(pool, mrd->evr), ")");
-			}
-		      else if (mrd->flags >= 8)
-			continue;
-		    }
-		  if (!str)
-		    {
-		      /* must be and chain */
-		      str = pool_dep2str(pool, rd->evr);
-		      for (;;)
-			{
-			  id = rd->name;
-			  if (!ISRELDEP(id))
-			    break;
-			  rd = GETRELDEP(pool, id);
-			  if (rd->flags != REL_AND)
-			    break;
-			  str = pool_tmpjoin(pool, pool_dep2str(pool, rd->evr), ":", str);
-			}
-		      str = pool_tmpjoin(pool, pool_dep2str(pool, id), ":", str);
-		      str = pool_tmpjoin(pool, "packageand(", str, ")");
-		    }
-		}
-	      else if (rd->flags >= 8)
-		continue;
-	    }
-	}
+      str = testcase_dep2str(pool, id);
       if (skey == SOLVABLE_REQUIRES)
 	{
 	  if (id == SOLVABLE_PREREQMARKER)
@@ -4463,7 +4352,7 @@ whatprovides(BSSolv::pool pool, char *str)
     PPCODE:
 	{
 	    Id p, pp, id;
-	    id = dep2id(pool, str);
+	    id = testcase_str2dep(pool, str);
 	    if (id)
 	      FOR_PROVIDES(p, pp, id)
 		XPUSHs(sv_2mortal(newSViv((IV)p)));
@@ -4476,7 +4365,7 @@ whatrequires(BSSolv::pool pool, char *str)
 	    Id p, id;
 	    Id *pp;
 	    Solvable *s;
-	    id = dep2id(pool, str);
+	    id = testcase_str2dep(pool, str);
 	    if (id)
 	      {
 		for (p = 2; p < pool->nsolvables; p++)
@@ -5404,12 +5293,12 @@ expand(BSSolv::expander xp, ...)
 		  }
 		else if (*s == '!')
 		  {
-		    Id id = dep2id(pool, s + (s[1] == '!' ? 2 : 1));
+		    Id id = testcase_str2dep(pool, s + (s[1] == '!' ? 2 : 1));
 		    queue_push2(&confl, id, s[1] == '!' ? 1 : 0);
 		  }
 		else
 		  {
-		    Id id = dep2id(pool, s);
+		    Id id = testcase_str2dep(pool, s);
 		    queue_push(&in, id);
 		  }
 	      }
