@@ -17,7 +17,7 @@
 
 
 Name:           perl-BSSolv
-Version:        0.29.0
+Version:        0.30.0
 Release:        0
 Url:            https://github.com/openSUSE/perl-BSSolv
 Source:         libsolv-0.6.15.tar.gz

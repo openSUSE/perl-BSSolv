@@ -1,4 +1,12 @@
 -------------------------------------------------------------------
+Thu Mar  2 16:12:10 CET 2017 - mls@suse.de
+
+- update to version 0.30.0 (perl module 0.10 version)
+  * fix fileprovides matching to not look at provides
+  * use libsolv's testcase functions to encode deps
+  * implement recommends pruning
+
+-------------------------------------------------------------------
 Tue Jul  5 13:26:09 CEST 2016 - mls@suse.de
 
 - update to version 0.29.0 (perl module 0.09 version)

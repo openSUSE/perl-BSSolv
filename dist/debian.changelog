@@ -1,3 +1,11 @@
+libbssolv-perl (0.4.0-10) unstable; urgency=low
+
+  * fix fileprovides matching to not look at provides
+  * use libsolv's testcase functions to encode deps
+  * implement recommends pruning
+
+ -- Michael Schroeder <mls@suse.de>  Thu, 2 Mar 2017 16:10:09 +0100
+
 libbssolv-perl (0.4.0-9) unstable; urgency=low
 
   * support add_meta helper method
