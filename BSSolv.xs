@@ -5206,9 +5206,13 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 			if (!str)
 			  continue;
 			id2 = pool_str2id(pool, str, 0);
+			if (!id2)
+			  continue;
 			FOR_PROVIDES(p, pp, id2)
 			  {
 			    int j;
+			    if (pool->solvables[p].name != id2)
+			      continue;		/* match name only */
 			    for (j = 0; j < q.count; j++)
 			      {
 				if (q.elements[j] == p)
