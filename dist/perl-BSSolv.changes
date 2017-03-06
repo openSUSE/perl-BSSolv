@@ -1,4 +1,9 @@
 -------------------------------------------------------------------
+Mon Mar  6 12:58:16 CET 2017 - mls@suse.de
+
+- bring back dep2id for now (perl module 0.11 version)
+
+-------------------------------------------------------------------
 Thu Mar  2 16:12:10 CET 2017 - mls@suse.de
 
 - update to version 0.30.0 (perl module 0.10 version)
