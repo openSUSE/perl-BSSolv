@@ -150,6 +150,61 @@ id2name(Pool *pool, Id id)
   return id;
 }
 
+static Id
+dep2id(Pool *pool, char *s)
+{
+  char *n;
+  Id id;
+  int flags;
+
+  if ((n = strchr(s, '|')) != 0)
+    {
+      id = dep2id(pool, n + 1);
+      *n = 0;
+      id = pool_rel2id(pool, dep2id(pool, s), id, REL_OR, 1);
+      *n = '|';
+      return id;
+    }
+  while (*s == ' ' || *s == '\t')
+    s++;
+  n = s;
+  while (*s && *s != ' ' && *s != '\t' && *s != '<' && *s != '=' && *s != '>')
+    s++;
+#ifdef REL_MULTIARCH
+  if (s - n > 4 && s[-4] == ':' && !strncmp(s - 4, ":any", 4))
+    {
+      id = pool_strn2id(pool, n, s - n - 4, 1);
+      id = pool_rel2id(pool, id, ARCH_ANY, REL_MULTIARCH, 1);
+    }
+  else
+#endif
+    id = pool_strn2id(pool, n, s - n, 1);
+  if (!*s)
+    return id;
+  while (*s == ' ' || *s == '\t')
+    s++;
+  flags = 0;
+  for (;;s++)
+    {
+      if (*s == '<')
+       flags |= REL_LT;
+      else if (*s == '=')
+       flags |= REL_EQ;
+      else if (*s == '>')
+       flags |= REL_GT;
+      else
+       break;
+    }
+  if (!flags)
+    return id;
+  while (*s == ' ' || *s == '\t')
+    s++;
+  n = s;
+  while (*s && *s != ' ' && *s != '\t')
+    s++;
+  return pool_rel2id(pool, id, pool_strn2id(pool, n, s - n, 1), flags, 1);
+}
+
 static inline Offset
 importdeps(HV *hv, const char *key, int keyl, Repo *repo)
 {
@@ -5297,12 +5352,12 @@ expand(BSSolv::expander xp, ...)
 		  }
 		else if (*s == '!')
 		  {
-		    Id id = testcase_str2dep(pool, s + (s[1] == '!' ? 2 : 1));
+		    Id id = dep2id(pool, s + (s[1] == '!' ? 2 : 1));
 		    queue_push2(&confl, id, s[1] == '!' ? 1 : 0);
 		  }
 		else
 		  {
-		    Id id = testcase_str2dep(pool, s);
+		    Id id = dep2id(pool, s);
 		    queue_push(&in, id);
 		  }
 	      }
