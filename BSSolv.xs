@@ -168,7 +168,7 @@ dep2id(Pool *pool, char *s)
   while (*s == ' ' || *s == '\t')
     s++;
   n = s;
-  while (*s && *s != ' ' && *s != '\t' && *s != '<' && *s != '=' && *s != '>')
+  while (*s && *s != ' ' && *s != '\t')
     s++;
 #ifdef REL_MULTIARCH
   if (s - n > 4 && s[-4] == ':' && !strncmp(s - 4, ":any", 4))
