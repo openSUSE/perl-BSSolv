@@ -168,8 +168,17 @@ dep2id(Pool *pool, char *s)
   while (*s == ' ' || *s == '\t')
     s++;
   n = s;
-  while (*s && *s != ' ' && *s != '\t')
-    s++;
+  if (pool->disttype == DISTTYPE_RPM)
+    {
+      /* rpm delimits the name by whitespace only */
+      while (*s && *s != ' ' && *s != '\t')
+        s++;
+    }
+  else
+    {
+      while (*s && *s != ' ' && *s != '\t' && *s != '<' && *s != '=' && *s != '>')
+        s++;
+    }
 #ifdef REL_MULTIARCH
   if (s - n > 4 && s[-4] == ':' && !strncmp(s - 4, ":any", 4))
     {
