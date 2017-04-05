@@ -516,6 +516,15 @@ expander_solvid2name(Expander *xp, Id p)
   return pool_tmpjoin(xp->pool, n, "@", r->name);
 }
 
+static int
+pkgname_sort_cmp(const void *ap, const void *bp, void *dp)
+{
+  Pool *pool = (Pool *)dp;
+  Id a = *(Id *)ap;
+  Id b = *(Id *)bp;
+  return strcmp(pool_id2str(pool, pool->solvables[a].name), pool_id2str(pool, pool->solvables[b].name));
+}
+
 static inline void
 expander_installed(Expander *xp, Id p, Map *installed, Map *conflicts, Queue *conflictsinfo, int *cidone, Queue *out, Queue *todo)
 {
@@ -5473,9 +5482,9 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("conflict for provider of %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("conflict for providers of %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
 			else
-		          sv = newSVpvf("conflict for provider of %s", pool_dep2str(pool, id));
+		          sv = newSVpvf("conflict for package %s", pool_dep2str(pool, id));
 			i += 3;
 		      }
 		    else if (type == ERROR_CONFLICTINGPROVIDERS)
@@ -5483,9 +5492,9 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-			  sv = newSVpvf("conflict for all providers of %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+			  sv = newSVpvf("conflict for providers of %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
 			else
-			  sv = newSVpvf("conflict for all providers of %s", pool_dep2str(pool, id));
+			  sv = newSVpvf("conflict for package %s", pool_dep2str(pool, id));
 			i += 3;
 		      }
 		    else if (type == ERROR_PROVIDERINFO)
@@ -5514,6 +5523,9 @@ expand(BSSolv::expander xp, ...)
 		      {
 			int j;
 			char *str = "";
+			for (j = i + 3; out.elements[j]; j++)
+			  ;
+			solv_sort(out.elements + i + 3, j - (i + 3), sizeof(Id), pkgname_sort_cmp, pool);
 			for (j = i + 3; out.elements[j]; j++)
 			  {
 			    Solvable *s = pool->solvables + out.elements[j];
