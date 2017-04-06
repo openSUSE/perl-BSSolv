@@ -266,9 +266,12 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
 }
 
 void
-data2solvables(Repo *repo, Repodata *data, HV *rhv)
+data2solvables(Repo *repo, Repodata *data, SV *rsv)
 {
   Pool *pool = repo->pool;
+  AV *rav = 0;
+  SSize_t ravi = 0;
+  HV *rhv = 0;
   SV *sv;
   HV *hv;
   char *str, *key;
@@ -276,9 +279,31 @@ data2solvables(Repo *repo, Repodata *data, HV *rhv)
   Id p;
   Solvable *s;
 
-  hv_iterinit(rhv);
-  while ((sv = hv_iternextsv(rhv, &key, &keyl)) != 0)
+  if (SvTYPE(rsv) == SVt_PVAV)
+    rav = (AV *)rsv;
+  else
+    rhv = (HV *)rsv;
+
+  if (rhv)
+    hv_iterinit(rhv);
+  for (;;)
     {
+      if (rhv)
+	{
+	  sv = hv_iternextsv(rhv, &key, &keyl);
+	  if (!sv)
+	    break;
+	}
+      else
+	{
+	  SV **svp;
+	  if (ravi > av_len(rav))
+	    break;
+	  svp = av_fetch(rav, ravi++, 0);
+	  if (!svp || !*svp)
+	    continue;
+	  sv = *svp;
+	}
       if (!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVHV)
 	continue;
       hv = (HV *)SvRV(sv);
@@ -4387,14 +4412,16 @@ repofrombins(BSSolv::pool pool, char *name, char *dir, ...)
 	RETVAL
 
 BSSolv::repo
-repofromdata(BSSolv::pool pool, char *name, HV *rhv)
+repofromdata(BSSolv::pool pool, char *name, SV *rv)
     CODE:
 	{
 	    Repo *repo;
 	    Repodata *data;
+	    if (!SvROK(rv) || (SvTYPE(SvRV(rv)) != SVt_PVHV && SvTYPE(SvRV(rv)) != SVt_PVAV))
+		croak("BSSolv::pool::repofromdata: rv is not a HASH or ARRAY reference");
 	    repo = repo_create(pool, name);
 	    data = repo_add_repodata(repo, 0);
-	    data2solvables(repo, data, rhv);
+	    data2solvables(repo, data, SvRV(rv));
 	    if (name && !strcmp(name, "/external/"))
 	      repodata_set_void(data, SOLVID_META, buildservice_external);
 	    repo_internalize(repo);
@@ -5109,7 +5136,7 @@ updatedoddata(BSSolv::repo repo, HV *rhv = 0)
 	    repodata_unset(data, SOLVID_META, buildservice_dodcookie);
 	    /* add new data */
 	    if (rhv)
-		data2solvables(repo, data, rhv);
+		data2solvables(repo, data, (SV *)rhv);
 	    repo_internalize(repo);
 	}
 

@@ -58,7 +58,7 @@ my %knowndeps = ('P' => 'provides', 'R' => 'requires', 'C' => 'conflicts', 'O' =
 
 sub parserepo {
   my ($repo) = @_;
-  my $packages = {};
+  my @packages;
   my $k = 0;
   for my $r (@$repo) {
     my @s = split(' ', $r);
@@ -81,14 +81,14 @@ sub parserepo {
       if ($1 eq 'P') {
 	$k++;
         die unless @ss && $ss[0] =~ /^(\S+) = (\S+)(?:-(\S+))?$/;
-        $packages->{$k}->{'name'} = $1;
-        $packages->{$k}->{'version'} = $2;
-        $packages->{$k}->{'release'} = $3 if defined $3;
+        push @packages, {'name' => $1, 'version' => $2};
+        $packages[-1]->{'release'} = $3 if defined $3;
       }
-      $packages->{$k}->{$knowndeps{$1}} = \@ss;
+      $packages[-1]->{$knowndeps{$1}} = \@ss;
     }
   }
-  return $packages;
+  #@packages = reverse @packages;
+  return \@packages;
 }
 
 sub setuptest {
