@@ -8,6 +8,7 @@
 
 #define MULTI_SEMANTICS
 
+#include "solvversion.h"
 #include "pool.h"
 #include "repo.h"
 #include "util.h"
@@ -21,6 +22,9 @@
 #include "repo_deb.h"
 #if 1
 #include "repo_arch.h"
+#endif
+#if defined(LIBSOLV_FEATURE_COMPLEX_DEPS)
+#include "pool_parserpmrichdep.h"
 #endif
 
 typedef struct _Expander {
@@ -51,6 +55,28 @@ typedef struct _Expander {
   int userecommendsforchoices;
 } Expander;
 
+typedef struct _ExpanderCtx {
+  Pool *pool;
+  Expander *xp;
+  Queue *out;			/* the result */
+  Map installed;		/* installed packages */
+  Map conflicts;		/* conflicts from installed packages */
+  Queue conflictsinfo;		/* source info for the above */
+  int cidone;			/* conflictsinfo done position */
+  Queue todo;			/* requires todo list */
+  Queue errors;			/* expansion errors */
+  Queue cplxq;			/* complex dep work queue */
+  Queue cplxblks;		/* complex dep block data, add only */
+  Queue todo_cond;		/* delayed requires/conflicts */
+  Queue pruneq;			/* multi purpose queue for pruning packages */
+  Map todo_condmap;		/* all neg packages in todo_cond blocks */
+  Map recommended;		/* recommended packages */
+  int recdone;			/* recommended done position */
+
+  Solvable *ignore_s;		/* small hack: ignore requires of the solvable */
+} ExpanderCtx;
+
+
 typedef Pool *BSSolv__pool;
 typedef Repo *BSSolv__repo;
 typedef Expander *BSSolv__expander;
@@ -61,6 +87,7 @@ static Id buildservice_external;
 static Id buildservice_dodurl;
 static Id expander_directdepsend;
 static Id buildservice_dodcookie;
+static Id parsedep_error;
 
 /* make sure bit n is usable */
 #define MAPEXP(m, n) ((m)->size < (((n) + 8) >> 3) ? map_grow(m, n + 256) : 0)
@@ -151,7 +178,7 @@ id2name(Pool *pool, Id id)
 }
 
 static Id
-dep2id(Pool *pool, char *s)
+dep2id_rec(Pool *pool, char *s)
 {
   char *n;
   Id id;
@@ -159,9 +186,9 @@ dep2id(Pool *pool, char *s)
 
   if ((n = strchr(s, '|')) != 0)
     {
-      id = dep2id(pool, n + 1);
+      id = dep2id_rec(pool, n + 1);
       *n = 0;
-      id = pool_rel2id(pool, dep2id(pool, s), id, REL_OR, 1);
+      id = pool_rel2id(pool, dep2id_rec(pool, s), id, REL_OR, 1);
       *n = '|';
       return id;
     }
@@ -214,7 +241,26 @@ dep2id(Pool *pool, char *s)
   return pool_rel2id(pool, id, pool_strn2id(pool, n, s - n, 1), flags, 1);
 }
 
-static inline Offset
+static Id
+dep2id(Pool *pool, char *s)
+{
+  Id id;
+  if (pool->disttype == DISTTYPE_RPM && *s == '(')
+    {
+#if defined(LIBSOLV_FEATURE_COMPLEX_DEPS)
+      id = pool_parserpmrichdep(pool, s);
+#else
+      id = 0;
+#endif
+    }
+  else
+    id = dep2id_rec(pool, s);
+  if (!id)
+    id = pool_rel2id(pool, parsedep_error, pool_str2id(pool, s, 1), REL_EQ, 1);
+  return id;
+}
+
+static Offset
 importdeps(HV *hv, const char *key, int keyl, Repo *repo)
 {
   Pool *pool = repo->pool;
@@ -227,13 +273,18 @@ importdeps(HV *hv, const char *key, int keyl, Repo *repo)
 	{
 	  char *str = avlookupstr(av, i);
 	  if (str)
-	    off = repo_addid_dep(repo, off, testcase_str2dep(pool, str), 0);
+	    {
+	      Id id = testcase_str2dep(pool, str);
+	      if (!id)
+	        id = pool_rel2id(pool, parsedep_error, pool_str2id(pool, str, 1), REL_EQ, 1);
+	      off = repo_addid_dep(repo, off, id, 0);
+	    }
 	}
     }
   return off;
 }
 
-void
+static void
 exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
 {
   Pool *pool = repo->pool;
@@ -265,7 +316,7 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
     (void)hv_store(hv, key, keyl, newRV_noinc((SV*)av), 0);
 }
 
-void
+static void
 data2solvables(Repo *repo, Repodata *data, SV *rsv)
 {
   Pool *pool = repo->pool;
@@ -503,6 +554,322 @@ retrieve(unsigned char **srcp, STRLEN *srclp, int depth)
   return sv;
 }
 
+#define CPLXDEPS_TODNF (1 << 0)
+
+static int
+invert_depblocks(ExpanderCtx *xpctx, Queue *bq, int start, int r)
+{
+  int i, j, end;
+  if (r == 0 || r == 1)
+    return r ? 0 : 1;
+  end = bq->count;
+  for (i = j = start; i < end; i++)
+    {
+      if (bq->elements[i])
+        {
+          bq->elements[i] = -bq->elements[i];
+          continue;
+        }
+      /* end of block reached, reverse */
+      if (i - 1 > j)
+        {
+          int k;
+          for (k = i - 1; j < k; j++, k--)
+            {
+              Id t = bq->elements[j];
+              bq->elements[j] = bq->elements[k];
+              bq->elements[k] = t;
+            }
+        }
+      j = i + 1;
+    }
+  return -1;
+}
+
+static int
+mix_depblocks(ExpanderCtx *xpctx, Queue *bq, int start, int start2, int flags)
+{
+  int i, j, end2 = bq->count;
+  for (i = start; i < start2; i++)
+    {
+      for (j = start2; j < end2; j++)
+	{
+	  int a, b;
+	  int bqcnt4 = bq->count;
+	  int k = i;
+
+	  /* mix i block with j block, both blocks are sorted */
+	  while (bq->elements[k] && bq->elements[j])
+	    {
+	      if (bq->elements[k] < bq->elements[j])
+		queue_push(bq, bq->elements[k++]);
+	      else
+		{
+		  if (bq->elements[k] == bq->elements[j])
+		    k++;
+		  queue_push(bq, bq->elements[j++]);
+		}
+	    }
+	  while (bq->elements[j])
+	    queue_push(bq, bq->elements[j++]);
+	  while (bq->elements[k])
+	    queue_push(bq, bq->elements[k++]);
+
+	  /* block is finished, check for A + -A */
+	  for (a = bqcnt4, b = bq->count - 1; a < b; )
+	    {
+	      if (-bq->elements[a] == bq->elements[b])
+		break;
+	      if (-bq->elements[a] > bq->elements[b])
+		a++;
+	      else
+		b--;
+	    }
+	  if (a < b)
+	    queue_truncate(bq, bqcnt4);     /* ignore this block */
+	  else
+	    queue_push(bq, 0);      /* finish block */
+	}
+      /* advance to next block */
+      while (bq->elements[i])
+	i++;
+    }
+  queue_deleten(bq, start, end2 - start);
+  if (start == bq->count)
+    return flags & CPLXDEPS_TODNF ? 0 : 1;
+  return -1;
+}
+
+#if 0
+static void
+print_depblocks(ExpanderCtx *xpctx, Queue *bq, int start, int r)
+{
+  Pool *pool = xpctx->pool;
+  int i;
+
+  if (r == 0)
+    {
+      printf("[NONE]\n");
+      return;
+    }
+  if (r == 1)
+    {
+      printf("[ALL]\n");
+      return;
+    }
+  for (i = start; i < bq->count; i++)
+    {
+      if (bq->elements[i] > 0)
+        printf(" %s", pool_solvid2str(pool, bq->elements[i]));
+      else if (bq->elements[i] < 0)
+        printf(" -%s", pool_solvid2str(pool, -bq->elements[i]));
+      else
+        printf(" ||");
+    }
+  printf("\n");
+}
+#endif
+
+
+static int
+pool_is_complex_dep_rd(Pool *pool, Reldep *rd)
+{
+  for (;;)
+    {
+      if (rd->flags == REL_AND || rd->flags == REL_COND)        /* those two are the complex ones */
+        return 1;
+      if (rd->flags != REL_OR)
+        return 0;
+      if (ISRELDEP(rd->name) && pool_is_complex_dep_rd(pool, GETRELDEP(pool, rd->name)))
+        return 1;
+      if (!ISRELDEP(rd->evr))
+        return 0;
+      rd = GETRELDEP(pool, rd->evr);
+    }
+}
+
+static inline int
+pool_is_complex_dep(Pool *pool, Id dep)
+{
+  if (ISRELDEP(dep))
+    {
+      Reldep *rd = GETRELDEP(pool, dep);
+      if (rd->flags >= 8 && pool_is_complex_dep_rd(pool, rd))
+        return 1;
+    }
+  return 0;
+}
+
+static int normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags);
+
+static int
+normalize_dep_or(ExpanderCtx *xpctx, Id dep1, Id dep2, Queue *bq, int flags, int invflags)
+{
+  int bqcnt, bqcnt2;
+  int r1, r2;
+  bqcnt = bq->count;
+  r1 = normalize_dep(xpctx, dep1, bq, flags);
+  if (r1 == 1)
+    return 1;		/* early exit */
+  bqcnt2 = bq->count;
+  r2 = normalize_dep(xpctx, dep2, bq, flags ^ invflags);
+  if (invflags)
+    r2 = invert_depblocks(xpctx, bq, bqcnt2, r2);
+  if (r1 == 1 || r2 == 1)
+    {
+      queue_truncate(bq, bqcnt);
+      return 1;
+    }
+  if (r1 == 0)
+    return r2;
+  if (r2 == 0)
+    return r1;
+  if ((flags & CPLXDEPS_TODNF) == 0)
+    return mix_depblocks(xpctx, bq, bqcnt, bqcnt2, flags);
+  return -1;
+}
+
+static int
+normalize_dep_and(ExpanderCtx *xpctx, Id dep1, Id dep2, Queue *bq, int flags, int invflags)
+{
+  int bqcnt, bqcnt2;
+  int r1, r2;
+  bqcnt = bq->count;
+  r1 = normalize_dep(xpctx, dep1, bq, flags);
+  if (r1 == 0)
+    return 0;		/* early exit */
+  bqcnt2 = bq->count;
+  r2 = normalize_dep(xpctx, dep2, bq, flags ^ invflags);
+  if (invflags)
+    r2 = invert_depblocks(xpctx, bq, bqcnt2, r2);
+  if (r1 == 0 || r2 == 0)
+    {
+      queue_truncate(bq, bqcnt);
+      return 0;
+    }
+  if (r1 == 1)
+    return r2;
+  if (r2 == 1)
+    return r1;
+  if ((flags & CPLXDEPS_TODNF) != 0)
+    return mix_depblocks(xpctx, bq, bqcnt, bqcnt2, flags);
+  return -1;
+}
+
+static int
+normalize_dep_if_else(ExpanderCtx *xpctx, Id dep1, Id dep2, Id dep3, Queue *bq, int flags)
+{
+  if ((flags & CPLXDEPS_TODNF) != 0)
+    {
+      /* we want OR: A IF (B ELSE C) -> (A AND B) OR (A AND C) OR (~B AND C) */
+      int bqcnt = bq->count;
+      int r1 = normalize_dep_and(xpctx, dep1, dep2, bq, flags, 0);
+      int r2 = normalize_dep_and(xpctx, dep1, dep3, bq, flags, 0);
+      int r3 = normalize_dep_and(xpctx, dep3, dep2, bq, flags, CPLXDEPS_TODNF);
+      if (r1 == 1 || r2 == 1 || r3 == 1)
+	{
+	  queue_truncate(bq, bqcnt);
+	  return 1;
+	}
+      if (r1 == 0 && r2 == 0 && r3 == 0)
+	return 0;
+    }
+  else
+    {
+      /* we want AND: A IF (B ELSE C) -> (A OR ~B) AND (C OR B) */
+      int bqcnt = bq->count;
+      int r1 = normalize_dep_or(xpctx, dep1, dep2, bq, flags, CPLXDEPS_TODNF);
+      int r2 = normalize_dep_or(xpctx, dep2, dep3, bq, flags, 0);
+      if (r1 == 0 || r2 == 0)
+	{
+	  queue_truncate(bq, bqcnt);
+	  return 0;
+	}
+      if (r1 == 1 && r2 == 1)
+	return 1;
+    }
+  return -1;
+}
+
+static int expander_isignored(Expander *xp, Solvable *s, Id req);
+
+static int
+normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
+{
+  Pool *pool = xpctx->pool;
+  Id p, dp;
+  
+  if (pool_is_complex_dep(pool, dep))
+    {
+      Reldep *rd = GETRELDEP(pool, dep);
+      if (rd->flags == REL_AND || rd->flags == REL_OR || rd->flags == REL_COND)
+	{
+	  int rdflags = rd->flags;
+	  Id evr = rd->evr;
+	  if (rdflags == REL_COND)
+	    {
+	      if (ISRELDEP(evr))
+		{
+		  Reldep *rd2 = GETRELDEP(pool, evr);
+		  if (rd2->flags == REL_ELSE)
+		    return normalize_dep_if_else(xpctx, rd->name, rd2->name, rd2->evr, bq, flags);
+		}
+	      return normalize_dep_or(xpctx, rd->name, rd->evr, bq, flags, CPLXDEPS_TODNF);
+	    }
+	  if (rdflags == REL_OR)
+	    return normalize_dep_or(xpctx, rd->name, rd->evr, bq, flags, 0);
+	  if (rdflags == REL_AND)
+	    return normalize_dep_and(xpctx, rd->name, rd->evr, bq, flags, 0);
+	}
+    }
+
+  if (xpctx->ignore_s && (flags & CPLXDEPS_TODNF) == 0)
+    {
+      if (expander_isignored(xpctx->xp, xpctx->ignore_s, dep))
+	return 1;
+    }
+
+  dp = pool_whatprovides(pool, dep);
+  if (dp == 2)
+    return 1;
+  if (dp < 2 || !pool->whatprovidesdata[dp])
+    return 0;
+  if (pool->whatprovidesdata[dp] == SYSTEMSOLVABLE)
+    return 1;
+  if ((flags & CPLXDEPS_TODNF) != 0)
+    {
+      while ((p = pool->whatprovidesdata[dp++]) != 0)
+        queue_push2(bq, p, 0);
+    }
+  else
+    {
+      while ((p = pool->whatprovidesdata[dp++]) != 0)
+        queue_push(bq, p);
+      queue_push(bq, 0);
+    }
+  return -1;
+}
+
+#define ISCPLX(pool, d) (ISRELDEP(d) && GETRELID(d) >= pool->nrels)
+#define GETCPLX(pool, d) (GETRELID(d) - pool->nrels)
+#define MAKECPLX(pool, d) (MAKERELDEP(pool->nrels + d))
+
+#define DEPTYPE_REQUIRES		0
+#define DEPTYPE_CONFLICTS		1
+#define DEPTYPE_OBSOLETES		2
+#define DEPTYPE_RECOMMENDS		3
+#define DEPTYPE_PROVIDES		4
+
+#define ERROR_NOPROVIDER		1
+#define ERROR_CHOICE			2
+#define ERROR_CONFLICTINGPROVIDERS	3
+#define ERROR_PROVIDERINFO		4
+#define ERROR_PROVIDERINFO2		5
+#define ERROR_BADDEPENDENCY		6
+#define ERROR_CONFLICT			7
+#define ERROR_CONFLICT2			8
+#define ERROR_ALLCONFLICT		9
+
 static void
 expander_dbg(Expander *xp, const char *format, ...)
 {
@@ -550,146 +917,265 @@ pkgname_sort_cmp(const void *ap, const void *bp, void *dp)
   return strcmp(pool_id2str(pool, pool->solvables[a].name), pool_id2str(pool, pool->solvables[b].name));
 }
 
-static inline void
-expander_installed(Expander *xp, Id p, Map *installed, Map *conflicts, Queue *conflictsinfo, int *cidone, Queue *out, Queue *todo)
+static int
+expander_isignored(Expander *xp, Solvable *s, Id req)
 {
   Pool *pool = xp->pool;
-  Solvable *s = pool->solvables + p;
-  Id req, id, *reqp, con, *conp;
+  Id id = id2name(pool, req);
   const char *n;
 
-  MAPSET(installed, p);
-  queue_push(out, p);
-  if (MAPTST(&xp->conflicts, s->name))
+  if (!xp->ignoreignore)
     {
-      int i;
-      for (i = 0; i < xp->conflictsq.count; i++)
+      if (MAPTST(&xp->ignored, id))
+	return 1;
+      if (MAPTST(&xp->ignoredx, id))
 	{
-	  Id p2, pp2;
-	  Id id = xp->conflictsq.elements[i];
-	  if (id != s->name)
-	    continue;
-	  id = xp->conflictsq.elements[i ^ 1];
-	  FOR_PROVIDES(p2, pp2, id)
-	    {
-	      if (pool->solvables[p2].name == id)
-		{
-		  MAPEXP(conflicts, pool->nsolvables);
-	          MAPSET(conflicts, p2);
-		}
-	    }
+	  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, s->name), ":", pool_id2str(pool, id)), 0);
+	  if (xid && MAPTST(&xp->ignored, xid))
+	    return 1;
 	}
     }
-  if (s->requires)
+  n = pool_id2str(pool, id);
+  if (!strncmp(n, "rpmlib(", 7))
     {
-      reqp = s->repo->idarraydata + s->requires;
-      while ((req = *reqp++) != 0)
-	{
-	  if (req == SOLVABLE_PREREQMARKER)
-	    continue;
-	  id = id2name(pool, req);
-	  if (!xp->ignoreignore)
-	    {
-	      if (MAPTST(&xp->ignored, id))
-		continue;
-	      if (MAPTST(&xp->ignoredx, id))
-		{
-		  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, s->name), ":", pool_id2str(pool, id)), 0);
-		  if (xid && MAPTST(&xp->ignored, xid))
-		    continue;
-		}
-	    }
-	  n = pool_id2str(pool, id);
-	  if (!strncmp(n, "rpmlib(", 7))
-	    {
-	      MAPEXP(&xp->ignored, id);
-	      MAPSET(&xp->ignored, id);
-	      continue;
-	    }
-	  if (*n == '/')
-	    {
-	      if (!xp->havefileprovides || pool->whatprovides[id] <= 1)
-		{
-		  MAPEXP(&xp->ignored, id);
-		  MAPSET(&xp->ignored, id);
-		  continue;
-		}
-	    }
-	  queue_push2(todo, req, p);
-	}
+      MAPEXP(&xp->ignored, id);
+      MAPSET(&xp->ignored, id);
+      return 1;
     }
-  if (!xp->ignoreconflicts)
+  if (*n == '/')
     {
-      if (s->conflicts)
+      if (!xp->havefileprovides || pool->whatprovides[id] <= 1)
 	{
-	  conp = s->repo->idarraydata + s->conflicts;
-	  while ((con = *conp++) != 0)
-	    {
-	      Id p2, pp2;
-	      FOR_PROVIDES(p2, pp2, con)
-		{
-		  if (p2 == p)
-		    continue;
-		  MAPEXP(conflicts, pool->nsolvables);
-		  MAPSET(conflicts, p2);
-		  if (xp->debug)
-		    queue_push2(conflictsinfo, p2, p);
-		}
-	    }
-	}
-      if (s->obsoletes)
-	{
-	  conp = s->repo->idarraydata + s->obsoletes;
-	  while ((con = *conp++) != 0)
-	    {
-	      Id p2, pp2;
-	      FOR_PROVIDES(p2, pp2, con)
-		{
-		  if (p2 == p || !pool_match_nevr(pool, pool->solvables + p2, con))
-		    continue;
-		  MAPEXP(conflicts, pool->nsolvables);
-		  MAPSET(conflicts, p2);
-		  if (xp->debug)
-		    queue_push2(conflictsinfo, p2, -p);
-		}
-	    }
-	}
-      if (xp->debug)
-	*cidone = out->count;
-    }
-}
-
-static inline int
-expander_checkconflicts(Expander *xp, Id p, Map *installed, Id *conflicts, int isobsoletes)
-{
-  Pool *pool = xp->pool;
-  Id con, p2, pp2;
-
-  if (xp->ignoreconflicts)
-    return 0;
-  while ((con = *conflicts++) != 0)
-    {
-      FOR_PROVIDES(p2, pp2, con)
-	{
-	  if (p == p2)
-	    continue;
-	  if (isobsoletes && !pool_match_nevr(pool, pool->solvables + p2, con))
-	    continue;
-	  if (MAPTST(installed, p2))
-	    return p2;
+	  MAPEXP(&xp->ignored, id);
+	  MAPSET(&xp->ignored, id);
+	  return 1;
 	}
     }
   return 0;
 }
 
-static void
-expander_updateconflictsinfo(Expander *xp, Queue *conflictsinfo, int *cidone, Queue *out)
+static int
+expander_to_cplxblks(ExpanderCtx *xpctx, Id p, Id dep, int deptype, Id *ptr)
 {
-  Pool *pool = xp->pool;
-  int i;
-  if (xp->ignoreconflicts)
+  int blkoff = xpctx->cplxblks.count;
+  queue_push(&xpctx->cplxblks, p);
+  queue_push(&xpctx->cplxblks, dep);
+  queue_push(&xpctx->cplxblks, deptype);
+  for (;;)
+    {
+      Id pp = *ptr++;
+      queue_push(&xpctx->cplxblks, pp);
+      if (!pp)
+	break;
+    }
+  return blkoff;
+}
+
+static int
+expander_check_cplxblock(ExpanderCtx *xpctx, Id p, Id dep, int deptype, Id *ptr, int blkoff)
+{
+  Pool *pool = xpctx->pool;
+  int posn = 0, posi = 0, negn = 0, negi = 0;
+  Id pp, *ptr2 = ptr;
+  Id lastcon = 0;
+
+  while ((pp = *ptr2++) != 0)
+    {
+      if (pp > 0)
+	{
+	  posn++;
+	  if (MAPTST(&xpctx->installed, pp))
+	    posi++;
+	}
+      else
+	{
+	  if (p == -pp)
+	    continue;	/* ignore redundant self-entry */
+	  negn++;
+	  if (MAPTST(&xpctx->installed, -pp))
+	    negi++;
+	  else
+	    lastcon = -pp;
+	}
+    }
+#if 0
+  printf("expander_check_cplxblock pos: %d,%d neg: %d,%d\n", posn, posi, negn, negi);
+#endif
+  if (posi)
+    return -1;
+  if (negi == negn)
+    {
+      /* all neg installed */
+      if (posn)
+	{
+	  /* posn > 0 and all neg installed, add to todo */
+	  if (blkoff < 0)
+	    blkoff = expander_to_cplxblks(xpctx, p, dep, deptype, ptr);
+#if 0
+	  printf("put on todo, blkoff = %d\n", blkoff);
+#endif
+	  queue_push2(&xpctx->todo, MAKECPLX(pool, blkoff), p);
+	}
+      else
+	{
+	  /* no posn, conflict */
+	  for (ptr2 = ptr; (pp = *ptr2++) != 0; )
+	    {
+	      if (p == -pp)
+		continue;	/* ignore redundant self-entry */
+	      queue_push(&xpctx->errors, ERROR_CONFLICT);
+	      queue_push2(&xpctx->errors, p, -pp);
+	    }
+	}
+      return -1;
+    }
+  else if (!posn && negn && negi == negn - 1)
+    {
+      /* add conflict */
+#if 0
+      printf("add conflict %d %d\n", lastcon, p);
+#endif
+      MAPEXP(&xpctx->conflicts, pool->nsolvables);
+      MAPSET(&xpctx->conflicts, lastcon);
+      if (p)
+        queue_push2(&xpctx->conflictsinfo, lastcon, p);	/* always do this for rich deps */
+      return -1;
+    }
+  else
+    {
+#ifdef DEBUG_COND
+      printf("put/stay on cond queue, blkoff = %d\n", blkoff);
+#endif
+      /* either posn > 0 and 1 neg not installed or more than 1 neg not installed */
+      if (blkoff < 0)
+	blkoff = expander_to_cplxblks(xpctx, p, dep, deptype, ptr);
+      return blkoff;
+    }
+}
+
+static void
+expander_installed_complexdep(ExpanderCtx *xpctx, Id p, Id dep, int deptype)
+{
+  Queue *cplxq = &xpctx->cplxq;
+  int r, i, start = cplxq->count, blkoff;
+
+#if 0
+  printf("expander_installed_complexdep %s type %d\n", pool_dep2str(xpctx->pool, dep), deptype);
+#endif
+  if (deptype == DEPTYPE_CONFLICTS)
+    {
+      r = normalize_dep(xpctx, dep, cplxq, CPLXDEPS_TODNF);
+      r = invert_depblocks(xpctx, cplxq, start, r);
+    }
+  else
+    r = normalize_dep(xpctx, dep, cplxq, 0);
+#if 0
+  print_depblocks(xpctx, cplxq, start, r);
+#endif
+  if (r == 1)
     return;
-  for (i = *cidone; i < out->count; i++)
+  if (r == 0)
+    {
+      if (deptype == DEPTYPE_CONFLICTS)
+	{
+	  queue_push(&xpctx->errors, ERROR_ALLCONFLICT);
+	  queue_push2(&xpctx->errors, dep, p);
+	}
+      else
+	{
+	  queue_push(&xpctx->errors, ERROR_NOPROVIDER);
+	  queue_push2(&xpctx->errors, dep, p);
+	}
+      return;
+    }
+  while (start < cplxq->count)
+    {
+      /* find end */
+      for (i = start; cplxq->elements[i] != 0; i++)
+	;
+      blkoff = expander_check_cplxblock(xpctx, p, dep, deptype, cplxq->elements + start, -1);
+      if (blkoff >= 0)
+	{
+	  Pool *pool = xpctx->pool;
+	  Id p;
+	  MAPEXP(&xpctx->todo_condmap, pool->nsolvables);
+	  for (i = start; (p = cplxq->elements[i]) != 0; i++)
+	    if (p < 0)
+	      MAPSET(&xpctx->todo_condmap, -p);
+	  queue_push(&xpctx->todo_cond, blkoff);
+	}
+      start = i + 1;
+    }
+  queue_truncate(cplxq, start);
+}
+
+static int
+expander_checkconflicts_complexdep(ExpanderCtx *xpctx, Id p, Id dep, int deptype, int recorderrors)
+{
+  Queue *cplxq = &xpctx->cplxq;
+  int r, i, start = cplxq->count;
+  Id pp;
+  int ret = 0;
+
+#if 0
+  printf("expander_checkconflicts_complexdep %s type %d\n", pool_dep2str(xpctx->pool, dep), deptype);
+#endif
+  if (deptype == DEPTYPE_CONFLICTS)
+    {
+      r = normalize_dep(xpctx, dep, cplxq, CPLXDEPS_TODNF);
+      r = invert_depblocks(xpctx, cplxq, start, r);
+    }
+  else
+    r = normalize_dep(xpctx, dep, cplxq, 0);
+#if 0
+  print_depblocks(xpctx, cplxq, start, r);
+#endif
+  /* r == 0: conflict with everything. Ignore here, pick error up when package gets installed */
+  if (r == 0 || r == 1)
+    return 0;
+  while (start < cplxq->count)
+    {
+      for (i = start; (pp = cplxq->elements[i]) != 0; i++)
+        if (pp > 0 || (pp < 0 && !MAPTST(&xpctx->installed, -pp)))
+	  break;
+      if (pp == 0)
+	{
+	  /* no pos and all neg installed -> conflict */
+	  for (i = start; (pp = cplxq->elements[i]) != 0; i++)
+	    {
+	      pp = -cplxq->elements[i];
+	      if (recorderrors)
+		{
+		  queue_push(&xpctx->errors, recorderrors == 2 ? ERROR_CONFLICT : ERROR_PROVIDERINFO);
+		  queue_push2(&xpctx->errors, p, pp);
+		}
+	      else if (xpctx->xp->debug)
+		{
+		  Pool *pool = xpctx->pool;
+		  expander_dbg(xpctx->xp, "ignoring provider %s because it conflicts with installed %s\n", pool_solvid2str(pool, p), pool_solvid2str(pool, pp));
+		}
+	      ret = ret ? 1 : pp;
+	    }
+	}
+      for (; cplxq->elements[i] != 0; i++)
+	;
+      start = i + 1;
+    }
+  queue_truncate(cplxq, start);
+  return ret;
+}
+
+static void
+updateconflictsinfo(ExpanderCtx *xpctx)
+{
+  int i;
+  Pool *pool = xpctx->pool;
+  Queue *out = xpctx->out;
+  Queue *conflictsinfo = &xpctx->conflictsinfo;
+
+  if (xpctx->xp->ignoreconflicts)
+    return;
+  for (i = xpctx->cidone; i < out->count; i++)
     {
       Id p, p2, pp2;
       Id con, *conp;
@@ -702,6 +1188,8 @@ expander_updateconflictsinfo(Expander *xp, Queue *conflictsinfo, int *cidone, Qu
 	  conp = s->repo->idarraydata + s->conflicts;
 	  while ((con = *conp++) != 0)
 	    {
+	      if (pool_is_complex_dep(pool, con))
+		continue;	/* already pushed */
 	      FOR_PROVIDES(p2, pp2, con)
 		{
 		  if (p2 == p)
@@ -724,17 +1212,299 @@ expander_updateconflictsinfo(Expander *xp, Queue *conflictsinfo, int *cidone, Qu
 	    }
 	}
     }
-  *cidone = out->count;
+  xpctx->cidone = out->count;
+}
+
+static int
+findconflictsinfo(ExpanderCtx *xpctx, Id p, int recorderrors)
+{
+  Queue *conflictsinfo = &xpctx->conflictsinfo;
+  int i, ret = 0;
+
+  if (xpctx->cidone < xpctx->out->count)
+    updateconflictsinfo(xpctx);
+
+  for (i = 0; i < conflictsinfo->count; i++)
+    if (conflictsinfo->elements[i] == p)
+      {
+	ret = conflictsinfo->elements[i + 1];
+	if (recorderrors)
+	  {
+	    queue_push(&xpctx->errors, recorderrors == 2 ? ERROR_CONFLICT2 : ERROR_PROVIDERINFO2);
+	    queue_push2(&xpctx->errors, p, ret);
+	  }
+	else if (xpctx->xp->debug)
+	  {
+	    Pool *pool = xpctx->pool;
+	    expander_dbg(xpctx->xp, "ignoring provider %s because installed %s %s it\n", pool_solvid2str(pool, p), pool_solvid2str(pool, ret > 0 ? ret : -ret), ret > 0 ? "conflicts with" : "obsoletes");
+	  }
+      }
+  if (!ret)
+    {
+      /* conflict from our job, i.e. a !xxx dep */
+      if (recorderrors)
+	{
+	  queue_push(&xpctx->errors, recorderrors == 2 ? ERROR_CONFLICT2 : ERROR_PROVIDERINFO2);
+	  queue_push2(&xpctx->errors, p, 0);
+	}
+      else if (xpctx->xp->debug)
+	{
+	  Pool *pool = xpctx->pool;
+	  expander_dbg(xpctx->xp, "ignoring conflicted provider %s\n", pool_solvid2str(pool, p));
+	}
+    }
+  return ret;
+}
+
+
+static void
+recheck_conddeps(ExpanderCtx *xpctx)
+{
+  int i;
+  for (i = 0; i < xpctx->todo_cond.count; i++)
+    {
+      int blkoff = xpctx->todo_cond.elements[i];
+#ifdef DEBUG_COND
+      printf("todo_cond %d\n", blkoff);
+#endif
+      Id *ptr = xpctx->cplxblks.elements + blkoff;
+      if (expander_check_cplxblock(xpctx, ptr[0], ptr[1], ptr[2], ptr + 3, blkoff) < 0)
+	{
+#ifdef DEBUG_COND
+	  printf("remove no longer needed cond entry\n");
+#endif
+	  queue_delete(&xpctx->todo_cond, i);
+	  i--;
+	}
+    }
+}
+
+/* install a single package */
+static void
+expander_installed(ExpanderCtx *xpctx, Id p)
+{
+  Pool *pool = xpctx->pool;
+  Expander *xp = xpctx->xp;
+  Solvable *s = pool->solvables + p;
+  Id req, *reqp, con, *conp;
+
+#if 0
+printf("expander_installed %s\n", pool_solvid2str(pool, p));
+#endif
+  MAPSET(&xpctx->installed, p);
+  queue_push(xpctx->out, p);
+
+  if (xpctx->conflicts.size && MAPTST(&xpctx->conflicts, p))
+    findconflictsinfo(xpctx, p, 2);
+
+  /* add synthetic conflicts from the project config */
+  if (MAPTST(&xp->conflicts, s->name))
+    {
+      int i;
+      for (i = 0; i < xp->conflictsq.count; i++)
+	{
+	  Id p2, pp2;
+	  Id id = xp->conflictsq.elements[i];
+	  if (id != s->name)
+	    continue;
+	  id = xp->conflictsq.elements[i ^ 1];
+	  FOR_PROVIDES(p2, pp2, id)
+	    {
+	      if (pool->solvables[p2].name != id)
+		continue;
+	      if (MAPTST(&xpctx->installed, p2))
+		{
+		  queue_push(&xpctx->errors, ERROR_CONFLICT);
+		  queue_push2(&xpctx->errors, p, p2);
+		  continue;
+		}
+	      MAPEXP(&xpctx->conflicts, pool->nsolvables);
+	      MAPSET(&xpctx->conflicts, p2);
+	      queue_push2(&xpctx->conflictsinfo, p2, p);
+	    }
+	}
+    }
+
+  if (s->requires)
+    {
+      reqp = s->repo->idarraydata + s->requires;
+      while ((req = *reqp++) != 0)
+	{
+	  if (req == SOLVABLE_PREREQMARKER)
+	    continue;
+	  if (ISRELDEP(req) && GETRELDEP(pool, req)->name == parsedep_error)
+	    {
+	      queue_push(&xpctx->errors, ERROR_BADDEPENDENCY);
+	      queue_push2(&xpctx->errors, GETRELDEP(pool, req)->evr, p);
+	      continue;
+	    }
+	  if (pool_is_complex_dep(pool, req))
+	    {
+	      xpctx->ignore_s = s;
+	      expander_installed_complexdep(xpctx, p, req, DEPTYPE_REQUIRES);
+	      xpctx->ignore_s = 0;
+	      continue;
+	    }
+	  if (expander_isignored(xp, s, req))
+	    continue;
+	  queue_push2(&xpctx->todo, req, p);
+	}
+    }
+  if (!xp->ignoreconflicts)
+    {
+      if (s->conflicts)
+	{
+	  conp = s->repo->idarraydata + s->conflicts;
+	  while ((con = *conp++) != 0)
+	    {
+	      Id p2, pp2;
+	      if (ISRELDEP(con) && GETRELDEP(pool, con)->name == parsedep_error)
+		{
+		  queue_push(&xpctx->errors, ERROR_BADDEPENDENCY);
+		  queue_push2(&xpctx->errors, GETRELDEP(pool, con)->evr, p);
+		  continue;
+		}
+	      if (pool_is_complex_dep(pool, con))
+		{
+		  expander_installed_complexdep(xpctx, p, con, DEPTYPE_CONFLICTS);
+		  continue;
+		}
+	      FOR_PROVIDES(p2, pp2, con)
+		{
+		  if (p2 == p)
+		    continue;
+		  if (MAPTST(&xpctx->installed, p2))
+		    {
+		      queue_push(&xpctx->errors, ERROR_CONFLICT);
+		      queue_push2(&xpctx->errors, p, p2);
+		      continue;
+		    }
+		  MAPEXP(&xpctx->conflicts, pool->nsolvables);
+		  MAPSET(&xpctx->conflicts, p2);
+		  if (xp->debug)
+		    queue_push2(&xpctx->conflictsinfo, p2, p);
+		}
+	    }
+	}
+      if (s->obsoletes)
+	{
+	  conp = s->repo->idarraydata + s->obsoletes;
+	  while ((con = *conp++) != 0)
+	    {
+	      Id p2, pp2;
+	      FOR_PROVIDES(p2, pp2, con)
+		{
+		  if (p2 == p || !pool_match_nevr(pool, pool->solvables + p2, con))
+		    continue;
+		  if (MAPTST(&xpctx->installed, p2))
+		    {
+		      queue_push(&xpctx->errors, ERROR_CONFLICT);
+		      queue_push2(&xpctx->errors, p, -p2);
+		      continue;
+		    }
+		  MAPEXP(&xpctx->conflicts, pool->nsolvables);
+		  MAPSET(&xpctx->conflicts, p2);
+		  if (xp->debug)
+		    queue_push2(&xpctx->conflictsinfo, p2, -p);
+		}
+	    }
+	}
+      if (xp->debug)
+	xpctx->cidone = xpctx->out->count;
+    }
+  if (xpctx->todo_condmap.size && MAPTST(&xpctx->todo_condmap, p))
+    recheck_conddeps(xpctx);
+}
+
+/* same as expander_installed, but install multiple packages
+ * in one block */
+static void
+expander_installed_multiple(ExpanderCtx *xpctx, Queue *toinstall)
+{
+  int i, j, havecond = 0;
+
+  /* unify */
+  for (i = j = 0; i < toinstall->count; i++)
+    {
+      Id p = toinstall->elements[i];
+      if (MAPTST(&xpctx->installed, p))
+	continue;	/* already seen */
+      MAPSET(&xpctx->installed, p);
+      toinstall->elements[j++] = p;
+      if (xpctx->todo_condmap.size && MAPTST(&xpctx->todo_condmap, p))
+	{
+	  havecond = 1;
+	  MAPCLR(&xpctx->todo_condmap, p);	/* no longer needed */
+	}
+    }
+  queue_truncate(toinstall, j);
+  
+  /* run conditionals first */
+  if (havecond)
+    recheck_conddeps(xpctx);
+
+  if (!xpctx->errors.count)
+    for (i = 0; i < toinstall->count; i++)
+      expander_installed(xpctx, toinstall->elements[i]);
+  queue_empty(toinstall);
+}
+
+static int
+expander_checkconflicts(ExpanderCtx *xpctx, Id p, Id *conflicts, int isobsoletes, int recorderrors)
+{
+  Map *installed = &xpctx->installed;
+  Expander *xp = xpctx->xp;
+  Pool *pool = xpctx->pool;
+  Id con, p2, pp2;
+  int ret = 0;
+
+  if (xp->ignoreconflicts)
+    return 0;
+  while ((con = *conflicts++) != 0)
+    {
+      if (!isobsoletes && pool_is_complex_dep(pool, con))
+	{
+	  p2 = expander_checkconflicts_complexdep(xpctx, p, con, DEPTYPE_CONFLICTS, recorderrors);
+	  ret = ret ? 1 : p2;
+	  continue;
+	}
+      FOR_PROVIDES(p2, pp2, con)
+	{
+	  if (p == p2)
+	    continue;
+	  if (isobsoletes && !pool_match_nevr(pool, pool->solvables + p2, con))
+	    continue;
+	  if (MAPTST(installed, p2))
+	    {
+	      if (recorderrors)
+		{
+		  queue_push(&xpctx->errors, recorderrors == 2 ? ERROR_CONFLICT : ERROR_PROVIDERINFO);
+		  queue_push2(&xpctx->errors, p, isobsoletes ? -p2 : p2);
+		}
+	      else if (xpctx->xp->debug)
+		{
+		  if (isobsoletes)
+		    expander_dbg(xpctx->xp, "ignoring provider %s because it obsoletes installed %s\n", pool_solvid2str(pool, p), pool_solvid2str(pool, p2));
+		  else
+		    expander_dbg(xpctx->xp, "ignoring provider %s because it conflicts with installed %s\n", pool_solvid2str(pool, p), pool_solvid2str(pool, p2));
+		}
+	      ret = ret ? 1 : p2;
+	    }
+	}
+    }
+  return ret;
 }
 
 static void
-expander_updaterecommendedmap(Expander *xp, Map *recommended, int *recdone, Queue *out)
+expander_updaterecommendedmap(ExpanderCtx *xpctx)
 {
-  Pool *pool = xp->pool;
+  Pool *pool = xpctx->pool;
+  Queue *out = xpctx->out;
+  Map *recommended = &xpctx->recommended;
 
   int i;
   Id p, pp, rec, *recp;
-  for (i = *recdone; i < out->count; i++)
+  for (i = xpctx->recdone; i < out->count; i++)
     {
       Solvable *s;
       s = pool->solvables + out->elements[i];
@@ -746,84 +1516,266 @@ expander_updaterecommendedmap(Expander *xp, Map *recommended, int *recdone, Queu
 	      MAPSET(recommended, p);
 	}
     }
-  *recdone = out->count;
+  xpctx->recdone = out->count;
 }
 
-static inline int
-findconflictsinfo(Queue *conflictsinfo, Id p)
+static int
+prune_neg_prefers(ExpanderCtx *xpctx, Id who, Id *e, int n)
 {
-  int i;
-
-  for (i = 0; i < conflictsinfo->count; i++)
-    if (conflictsinfo->elements[i] == p)
-      return conflictsinfo->elements[i + 1];
-  return 0;
+  Expander *xp = xpctx->xp;
+  Pool *pool = xpctx->pool;
+  Id whon = who ? pool->solvables[who].name : 0;
+  int i, j;
+  for (i = j = 0; i < n; i++)
+    {
+      Id p = e[i];
+      Id pn = pool->solvables[p].name;
+      if (MAPTST(&xp->preferneg, pn))
+	continue;
+      if (who && MAPTST(&xp->prefernegx, pn))
+	{
+	  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
+	  if (xid && MAPTST(&xp->preferneg, xid))
+	    continue;
+	}
+      e[j++] = p;
+    }
+  return j ? j : n;
 }
 
-#define ERROR_NOPROVIDER		1
-#define ERROR_CHOICE			2
-#define ERROR_CONFLICTINGPROVIDER	3
-#define ERROR_CONFLICTINGPROVIDERS	4
-#define ERROR_PROVIDERINFO		5
-#define ERROR_PROVIDERINFO2		6
+static int
+prune_pos_prefers(ExpanderCtx *xpctx, Id who, Id *e, int n)
+{
+  Expander *xp = xpctx->xp;
+  Queue *pruneq = &xpctx->pruneq;
+  Pool *pool = xpctx->pool;
+  Id whon = who ? pool->solvables[who].name : 0;
+  int i, j;
 
+  if (pruneq->count)
+    queue_empty(pruneq);
+  for (i = j = 0; i < n; i++)
+    {
+      Id p = e[i];
+      Id pn = pool->solvables[p].name;
+      if (MAPTST(&xp->preferpos, pn))
+	queue_push2(pruneq, pn, p);
+      else if (who && MAPTST(&xp->preferposx, pn))
+	{
+	  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
+	  if (xid && MAPTST(&xp->preferpos, xid))
+	    queue_push2(pruneq, xid, p);
+	}
+    }
+  if (!pruneq->count)
+    return n;
+  if (pruneq->count > 2)
+    {
+      /* pos prefers are ordered, the first one wins */
+      for (i = 0; i < xp->preferposq.count; i++)
+	{
+	  Id xid = xp->preferposq.elements[i];
+	  for (j = 0; j < pruneq->count; j += 2)
+	    if (pruneq->elements[j] == xid)
+	      {
+		e[0] = pruneq->elements[j + 1];
+		return 1;
+	      }
+	}
+    }
+  e[0] = pruneq->elements[1];	/* simple case, just one prefer */
+  return 1;
+}
 
-int
-expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
+static int
+prune_or_dep(ExpanderCtx *xpctx, Id dep, Id *e, int n)
+{
+  Pool *pool = xpctx->pool;
+  int i, j;
+  Id p, pp;
+
+  for (;;)
+    {
+      Reldep *rd = 0;
+      if (ISRELDEP(dep))
+	{
+	  rd = GETRELDEP(pool, dep);
+	  if (rd->flags != REL_OR)
+	    rd = 0;
+	}
+      if (rd)
+	dep = rd->name;
+      i = j = 0;
+      /* both sets are ordered */
+      FOR_PROVIDES(p, pp, dep)
+	{
+	  if (p < e[i])
+	    continue;
+	  while (i < n && p > e[i])
+	    i++;
+	  if (i == n)
+	    break;
+	  if (p == e[i])
+	    e[j++] = p;
+	}
+      if (j)
+	return j;
+      if (rd)
+	dep = rd->evr;
+      else
+	break;
+    }
+  return n;
+}
+
+static void
+expander_growmaps(Expander *xp)
 {
   Pool *pool = xp->pool;
-  Queue todo, errors, cerrors, qq, posfoundq;
-  Map installed;
-  Map conflicts;
-  Map recommended;
-  Queue conflictsinfo;
-  int cidone, recdone;
+  MAPEXP(&xp->ignored, pool->ss.nstrings);
+  MAPEXP(&xp->ignoredx, pool->ss.nstrings);
+  MAPEXP(&xp->preferpos, pool->ss.nstrings);
+  MAPEXP(&xp->preferposx, pool->ss.nstrings);
+  MAPEXP(&xp->preferneg, pool->ss.nstrings);
+  MAPEXP(&xp->prefernegx, pool->ss.nstrings);
+  MAPEXP(&xp->conflicts, pool->ss.nstrings);
+}
+
+static int
+expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignoreq, int ignoreignore)
+{
+  ExpanderCtx xpctx;
+  Pool *pool = xp->pool;
+  Queue toinstall;
+  Queue qq, choices;
   Solvable *s;
   Id q, p, pp;
-  int i, j, nerrors, doamb, ambcnt;
-  Id id, who, whon, pn;
-  Id conflprov, conflprovpc;
-  int haverecommended = 0;
-  int haverecommended_done = 0;
+  int i, j, nerrors;
+  int ti, tj, tc;
+  Id todoid, id, who, whon;
+  Id conflprovpc;
+  int pass;
+  Queue revertignore;
+  int oldignoreignore = xp->ignoreignore;
+  Map oldignored, oldignoredx;
+  int ignoremapssaved = 0;
 
-  map_init(&installed, pool->nsolvables);
-  map_init(&conflicts, 0);
-  map_init(&recommended, 0);
-  queue_init(&conflictsinfo);
-  queue_init(&todo);
+  memset(&xpctx, 0, sizeof(xpctx));
+  xpctx.xp = xp;
+  xpctx.pool = pool;
+  xpctx.out = out;
+  map_init(&xpctx.installed, pool->nsolvables);
+  map_init(&xpctx.conflicts, 0);
+  map_init(&xpctx.recommended, 0);
+  queue_init(&xpctx.conflictsinfo);
+  queue_init(&xpctx.todo);
+  queue_init(&xpctx.todo_cond);
+  map_init(&xpctx.todo_condmap, 0);
+  queue_init(&xpctx.errors);
+  queue_init(&xpctx.cplxq);
+  queue_init(&xpctx.cplxblks);
+  queue_init(&xpctx.pruneq);
+
+  queue_init(&toinstall);
   queue_init(&qq);
-  queue_init(&errors);
-  queue_init(&cerrors);
-  queue_init(&posfoundq);
+  queue_init(&choices);
+  queue_init(&revertignore);
 
   queue_empty(out);
-  cidone = 0;
-  recdone = 0;
 
-  if (inconfl)
+  /* process ignored */
+  if (ignoreignore && ignoreq->count)
     {
-      for (i = 0; i < inconfl->count; i += 2)
+      /* bad: have direct ignores and we need to zero the project config ignores */
+      oldignored = xp->ignored;
+      oldignoredx = xp->ignoredx;
+      ignoremapssaved = 1;
+      /* clear project config maps */
+      memset(&xp->ignored, 0, sizeof(xp->ignored));
+      memset(&xp->ignoredx, 0, sizeof(xp->ignoredx));
+    }
+
+  if (ignoreq->count)
+    {
+      /* mix direct ignores with ignores from project config */
+      for (i = 0; i < ignoreq->count; i++)
 	{
-	  Id con = inconfl->elements[i];
-	  FOR_PROVIDES(p, pp, con)
+	  const char *ss;
+	  id = ignoreq->elements[i];
+	  MAPEXP(&xp->ignored, id);
+	  if (MAPTST(&xp->ignored, id))
+	    continue;
+	  MAPSET(&xp->ignored, id);
+	  queue_push(&revertignore, id);
+	  if ((ss = strchr(pool_id2str(pool, id), ':')) != 0)
 	    {
-	      if (inconfl->elements[i + 1] && !pool_match_nevr(pool, pool->solvables + p, con))
+	      id = pool_str2id(pool, ss + 1, 1);
+	      MAPEXP(&xp->ignoredx, id);
+	      if (MAPTST(&xp->ignoredx, id))
 		continue;
-	      MAPEXP(&conflicts, pool->nsolvables);
-	      MAPSET(&conflicts, p);
+	      MAPSET(&xp->ignoredx, id);
+	      queue_push(&revertignore, -id);
 	    }
 	}
     }
-  /* do direct expands */
+  else if (ignoreignore)
+    {
+      /* no direct ignores, ignore project config ignores.
+       * easy: just disable ignore processing */
+      xp->ignoreignore = 1;
+    }
+
+  /* grow maps to make bit tests cheaper */
+  expander_growmaps(xp);
+
+  /* process standard dependencies */
+  if (indep)
+    {
+      for (i = 0; i < indep->count; i += 2)
+	{
+	  int deptype = indep->elements[i];
+	  Id dep = indep->elements[i + 1];
+	  if (ISRELDEP(dep) && GETRELDEP(pool, dep)->name == parsedep_error)
+	    {
+	      queue_push(&xpctx.errors, ERROR_BADDEPENDENCY);
+	      queue_push2(&xpctx.errors, GETRELDEP(pool, dep)->evr, 0);
+	      continue;
+	    }
+	  if ((deptype == DEPTYPE_REQUIRES || deptype == DEPTYPE_CONFLICTS) && pool_is_complex_dep(pool, dep))
+	    {
+	      expander_installed_complexdep(&xpctx, 0, dep, deptype);
+	      continue;
+	    }
+	  if (deptype == DEPTYPE_REQUIRES)
+	    {
+	      queue_push2(&xpctx.todo, dep, 0);
+	    }
+	  else if (deptype == DEPTYPE_CONFLICTS || deptype == DEPTYPE_OBSOLETES)
+	    {
+	      FOR_PROVIDES(p, pp, dep)
+		{
+		  if (deptype == DEPTYPE_OBSOLETES && !pool_match_nevr(pool, pool->solvables + p, dep))
+		    continue;
+		  MAPEXP(&xpctx.conflicts, pool->nsolvables);
+		  MAPSET(&xpctx.conflicts, p);
+		}
+	    }
+	}
+    }
+  /* process direct dependencies */
   for (i = 0; i < in->count; i++)
     {
       id = in->elements[i];
-      if (id == expander_directdepsend)
+      if (ISRELDEP(id) && GETRELDEP(pool, id)->name == parsedep_error)
 	{
-	  for (i = i + 1; i < in->count; i++)
-	    if (in->elements[i] != expander_directdepsend)
-	      queue_push2(&todo, in->elements[i], 0);
-	  break;
+	  queue_push(&xpctx.errors, ERROR_BADDEPENDENCY);
+	  queue_push2(&xpctx.errors, GETRELDEP(pool, id)->evr, 0);
+	  continue;
+	}
+      if (pool_is_complex_dep(pool, id))
+	{
+	  expander_installed_complexdep(&xpctx, 0, id, DEPTYPE_REQUIRES);
+	  continue;
 	}
       q = 0;
       FOR_PROVIDES(p, pp, id)
@@ -840,388 +1792,354 @@ expander_expand(Expander *xp, Queue *in, Queue *out, Queue *inconfl)
 	}
       if (!q)
 	{
-	  /* unclear, resolve later */
-	  queue_push2(&todo, id, 0);
-	  continue;
-	}
-      if (MAPTST(&installed, q))
-	continue;
-      if (conflicts.size && MAPTST(&conflicts, q))
-	{
-	  queue_push(&errors, ERROR_CONFLICTINGPROVIDER);
-	  queue_push2(&errors, id, 0);
-	  if (cidone < out->count)
-	    expander_updateconflictsinfo(xp, &conflictsinfo, &cidone, out);
-	  queue_push(&errors, ERROR_PROVIDERINFO2);
-	  queue_push2(&errors, q, findconflictsinfo(&conflictsinfo, q));
-	  continue;
-	}
-      if (pool->solvables[q].conflicts && (pp = expander_checkconflicts(xp, q, &installed, pool->solvables[q].repo->idarraydata + pool->solvables[q].conflicts, 0)) != 0)
-	{
-	  queue_push(&errors, ERROR_CONFLICTINGPROVIDER);
-	  queue_push2(&errors, id, 0);
-	  queue_push(&errors, ERROR_PROVIDERINFO);
-	  queue_push2(&errors, q, pp);
-	  continue;
-	}
-      if (pool->solvables[q].obsoletes && (pp = expander_checkconflicts(xp, q, &installed, pool->solvables[q].repo->idarraydata + pool->solvables[q].obsoletes, 1)) != 0)
-	{
-	  queue_push(&errors, ERROR_CONFLICTINGPROVIDER);
-	  queue_push2(&errors, id, 0);
-	  queue_push(&errors, ERROR_PROVIDERINFO);
-	  queue_push2(&errors, q, -pp);
+	  queue_push2(&xpctx.todo, id, 0);	/* unclear, resolve later */
 	  continue;
 	}
       if (xp->debug)
 	expander_dbg(xp, "added %s because of %s (direct dep)\n", expander_solvid2name(xp, q), pool_dep2str(pool, id));
-      expander_installed(xp, q, &installed, &conflicts, &conflictsinfo, &cidone, out, &todo); /* unique match! */
+      queue_push(&toinstall, q);
     }
 
-  doamb = 0;
-  ambcnt = todo.count;
-  while (todo.count)
+  /* unify toinstall, check against conflicts */
+  for (i = 0; i < toinstall.count; i++)
     {
-      id = queue_shift(&todo);
-      who = queue_shift(&todo);
-      if (ambcnt == 0)
-	{
-	  /* end of pass */
-	  if (doamb >= 2)
-	    break;	/* amb pass had no progress, stop */
-	  doamb = xp->userecommendsforchoices ? doamb + 1 : 3;
-	  if (doamb == 1 && !haverecommended)
-	    {
-	      for (i = haverecommended_done; i < out->count; i++)
-		if (pool->solvables[out->elements[i]].recommends)
-		  haverecommended = 1;
-	      haverecommended_done = out->count;
-	      if (!haverecommended)
-		doamb = 3;
-	    }
-	  if (xp->debug)
-	    {
-	      if (doamb == 2)
-	        expander_dbg(xp, "now doing undecided dependencies with recommends\n");
-	      else
-	        expander_dbg(xp, "now doing undecided dependencies\n");
-	    }
-	  ambcnt = todo.count;
-	}
-      else
-	ambcnt -= 2;
-// printf("todo %s %s ambcnt %d\n", pool_id2str(pool, pool->solvables[who].name), pool_dep2str(pool, id), ambcnt);
-// fflush(stdout);
-      whon = who ? pool->solvables[who].name : 0;
-      queue_empty(&qq);
-      conflprov = 0;
-      conflprovpc = 0;
-      FOR_PROVIDES(p, pp, id)
-	{
-	  Id pc;
-	  if (MAPTST(&installed, p))
-	    break;
-	  if (who && !xp->ignoreignore)
-	    {
-	      Id pn = pool->solvables[p].name;
-	      if (MAPTST(&xp->ignored, pn))
-		break;
-	      if (MAPTST(&xp->ignoredx, pn))
-		{
-		  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
-		  if (xid && MAPTST(&xp->ignored, xid))
-		    break;
-		}
-	    }
-	  if (conflicts.size && MAPTST(&conflicts, p))
-	    {
-	      if (xp->debug)
-		{
-		  Id pc = findconflictsinfo(&conflictsinfo, p);
-		  if (pc)
-		    expander_dbg(xp, "ignoring provider %s of %s because installed %s %s it\n", pool_solvid2str(pool, p), pool_dep2str(pool, id), pool_solvid2str(pool, pc > 0 ? pc : -pc), pc > 0 ? "conflicts with" : "obsoletes");
-		  else
-		    expander_dbg(xp, "ignoring conflicted provider %s of %s\n", pool_solvid2str(pool, p), pool_dep2str(pool, id));
-		}
-	      conflprov = conflprov ? 1 : p;
-	      conflprovpc = 0;
-	      continue;
-	    }
-	  if (pool->solvables[p].conflicts && (pc = expander_checkconflicts(xp, p, &installed, pool->solvables[p].repo->idarraydata + pool->solvables[p].conflicts, 0)) != 0)
-	    {
-	      expander_dbg(xp, "ignoring provider %s of %s because it conflicts with installed %s\n", pool_solvid2str(pool, p), pool_dep2str(pool, id), pool_solvid2str(pool, pc));
-	      conflprov = conflprov ? 1 : p;
-	      conflprovpc = pc;
-	      continue;
-	    }
-	  if (pool->solvables[p].obsoletes && (pc = expander_checkconflicts(xp, p, &installed, pool->solvables[p].repo->idarraydata + pool->solvables[p].obsoletes, 1)) != 0)
-	    {
-	      expander_dbg(xp, "ignoring provider %s of %s because it obsoletes installed %s\n", pool_solvid2str(pool, p), pool_dep2str(pool, id), pool_solvid2str(pool, pc));
-	      conflprov = conflprov ? 1 : p;
-	      conflprovpc = -pc;
-	      continue;
-	    }
-	  queue_push(&qq, p);
-	}
-      if (p)
+      p = toinstall.elements[i];
+      MAPSET(&xpctx.installed, p);
+    }
+  for (i = j = 0; i < toinstall.count; i++)
+    {
+      p = toinstall.elements[i];
+      if (!MAPTST(&xpctx.installed, p))
 	continue;
-      if (qq.count == 0)
+      MAPCLR(&xpctx.installed, p);
+      toinstall.elements[j++] = p;
+    }
+  queue_truncate(&toinstall, j);
+  if (xpctx.conflicts.size)
+    {
+      for (i = 0; i < toinstall.count; i++)
 	{
-	  if (!conflprov)
-	    {
-	      queue_push(&errors, ERROR_NOPROVIDER);
-	      queue_push2(&errors, id, who);
-	      continue;
-	    }
-	  /* more work for conflicts */
-	  if (conflprov != 1)
-	    {
-	      /* nice, just one provider */
-	      queue_push(&errors, ERROR_CONFLICTINGPROVIDER);
-	      queue_push2(&errors, id, who);
-	      if (!conflprovpc)
-		{
-		  if (cidone < out->count)
-		    expander_updateconflictsinfo(xp, &conflictsinfo, &cidone, out);
-		  conflprovpc = findconflictsinfo(&conflictsinfo, conflprov);
-		  queue_push(&errors, ERROR_PROVIDERINFO2);
-		  queue_push2(&errors, conflprov, conflprovpc);
-		}
-	      else
-		{
-		  queue_push(&errors, ERROR_PROVIDERINFO);
-		  queue_push2(&errors, conflprov, conflprovpc);
-		}
-	      continue;
-	    }
-	  /* even more work if all providers conflict */
-	  queue_push(&errors, ERROR_CONFLICTINGPROVIDERS);
-	  queue_push2(&errors, id, who);
-	  if (cidone < out->count)
-	    expander_updateconflictsinfo(xp, &conflictsinfo, &cidone, out);
-	  FOR_PROVIDES(p, pp, id)
-	    {
-	      Id pc;
-	      if (conflicts.size && MAPTST(&conflicts, p))
-		{
-		  pc = findconflictsinfo(&conflictsinfo, p);
-		  queue_push(&errors, ERROR_PROVIDERINFO2);
-		  queue_push2(&errors, p, pc);
-		  continue;
-		}
-	      if (pool->solvables[p].conflicts && (pc = expander_checkconflicts(xp, p, &installed, pool->solvables[p].repo->idarraydata + pool->solvables[p].conflicts, 0)) != 0)
-		{
-		  queue_push(&errors, ERROR_PROVIDERINFO);
-		  queue_push2(&errors, p, pc);
-		  continue;
-		}
-	      if (pool->solvables[p].obsoletes && (pc = expander_checkconflicts(xp, p, &installed, pool->solvables[p].repo->idarraydata + pool->solvables[p].obsoletes, 1)) != 0)
-		{
-		  queue_push(&errors, ERROR_PROVIDERINFO);
-		  queue_push2(&errors, p, -pc);
-		  continue;
-		}
-	    }
+	  p = toinstall.elements[i];
+	  if (MAPTST(&xpctx.conflicts, p))
+	    findconflictsinfo(&xpctx, p, 2);
+	}
+    }
+
+  /* here is the big expansion loop */
+  pass = 0;
+  while ((toinstall.count || xpctx.todo.count) && !xpctx.errors.count)
+    {
+      if (toinstall.count)
+	{
+	  expander_installed_multiple(&xpctx, &toinstall);
+	  pass = 0;
 	  continue;
 	}
-      if (qq.count > 1 && !doamb)
+      if (pass == 1)
+	queue_empty(&choices);
+	
+      for (ti = tj = 0; ti < xpctx.todo.count; ti += 2)
 	{
-	  /* try again later */
-	  queue_push2(&todo, id, who);
+	  todoid = id = xpctx.todo.elements[ti];
+	  who = xpctx.todo.elements[ti + 1];
+	  if (!id)			/* deleted entry? */
+	    continue;
+	  queue_empty(&qq);
+	  if (ISCPLX(pool, id))
+	    {
+	      pp = GETCPLX(pool, id);	/* p, dep, deptype, ids... */
+	      id = xpctx.cplxblks.elements[pp + 1];
+	      pp += 3;
+	      while ((p = xpctx.cplxblks.elements[pp++]))
+		if (p > 0)
+		  queue_push(&qq, p);
+	    }
+	  else
+	    {
+	      FOR_PROVIDES(p, pp, id)
+		queue_push(&qq, p);
+	    }
+
+	  if (qq.count == 0)
+	    {
+	      queue_push(&xpctx.errors, ERROR_NOPROVIDER);
+	      queue_push2(&xpctx.errors, id, who);
+	      continue;
+	    }
+
+	  /* check installed and ignores */
+	  whon = who ? pool->solvables[who].name : 0;
+	  for (i = 0; i < qq.count; i++)
+	    {
+	      p = qq.elements[i];
+	      if (MAPTST(&xpctx.installed, p))
+		break;
+	      if (!xp->ignoreignore)
+		{
+		  Id pn = pool->solvables[p].name;
+		  if (MAPTST(&xp->ignored, pn))
+		    break;
+		  if (who && MAPTST(&xp->ignoredx, pn))
+		    {
+		      Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
+		      if (xid && MAPTST(&xp->ignored, xid))
+			break;
+		    }
+		}
+	    }
+	  if (i < qq.count)
+	    continue;		/* ignored dependency or fulfilled */
+
+	  if (pass == 0 && qq.count > 1)
+	    {
+	      xpctx.todo.elements[tj++] = todoid;
+	      xpctx.todo.elements[tj++] = who;
+	      continue;
+	    }
+
+	  /* do conflict pruning */
+	  conflprovpc = 0;
+	  for (i = j = 0; i < qq.count; i++)
+	    {
+	      Id pc;
+	      p = qq.elements[i];
+	      if (xpctx.conflicts.size && MAPTST(&xpctx.conflicts, p))
+		{
+		  if (xp->debug)
+		    findconflictsinfo(&xpctx, p, 0);
+		  conflprovpc = 0;
+		  continue;
+		}
+	      if (pool->solvables[p].conflicts && (pc = expander_checkconflicts(&xpctx, p, pool->solvables[p].repo->idarraydata + pool->solvables[p].conflicts, 0, 0)) != 0)
+		{
+		  conflprovpc = pc;
+		  continue;
+		}
+	      if (pool->solvables[p].obsoletes && (pc = expander_checkconflicts(&xpctx, p, pool->solvables[p].repo->idarraydata + pool->solvables[p].obsoletes, 1, 0)) != 0)
+		{
+		  conflprovpc = -pc;
+		  continue;
+		}
+	      qq.elements[j++] = p;
+	    }
+	  if (j == 0)
+	    {
+	      queue_push(&xpctx.errors, ERROR_CONFLICTINGPROVIDERS);
+	      queue_push2(&xpctx.errors, id, who);
+	      if (qq.count == 1 && conflprovpc != 1 && conflprovpc != -1)
+		{
+		  p = qq.elements[0];
+		  if (conflprovpc)
+		    {
+		      queue_push(&xpctx.errors, ERROR_PROVIDERINFO);
+		      queue_push2(&xpctx.errors, p, conflprovpc);
+		      continue;
+		    }
+		  findconflictsinfo(&xpctx, p, 1);
+		  continue;
+		}
+	      /* even more work if all providers conflict */
+	      for (j = 0; j < qq.count; j++)
+		{
+		  p = qq.elements[j];
+		  if (xpctx.conflicts.size && MAPTST(&xpctx.conflicts, p))
+		    findconflictsinfo(&xpctx, p, 1);
+		  if (pool->solvables[p].conflicts)
+		    expander_checkconflicts(&xpctx, p, pool->solvables[p].repo->idarraydata + pool->solvables[p].conflicts, 0, 1);
+		  if (pool->solvables[p].obsoletes)
+		    expander_checkconflicts(&xpctx, p, pool->solvables[p].repo->idarraydata + pool->solvables[p].obsoletes, 1, 1);
+		}
+	      continue;
+	    }
+	  queue_truncate(&qq, j);
+          if (qq.count == 1)
+	    {
+	      p = qq.elements[0];
+	      if (xp->debug)
+		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
+	      queue_push(&toinstall, p);
+	      continue;
+	    }
+	  /* pass is == 1 and we have multiple choices */
 	  if (xp->debug)
 	    {
 	      expander_dbg(xp, "undecided about %s:%s:", whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
 	      for (i = 0; i < qq.count; i++)
-	        expander_dbg(xp, " %s", expander_solvid2name(xp, qq.elements[i]));
-	      expander_dbg(xp, "\n");
+		expander_dbg(xp, " %s", expander_solvid2name(xp, qq.elements[i]));
+              expander_dbg(xp, "\n");
 	    }
+	  queue_push2(&choices, qq.count + 3, id);
+	  queue_push(&choices, qq.count);
+	  queue_insertn(&choices, choices.count, qq.count, qq.elements);
+	  xpctx.todo.elements[tj++] = todoid;
+	  xpctx.todo.elements[tj++] = who;
+	}
+      queue_truncate(&xpctx.todo, tj);
+
+      if (toinstall.count)
+	continue;
+
+      if (pass == 0)
+	{
+	  pass = 1;	/* now do conflict pruning */
 	  continue;
 	}
 
-      /* prune neg prefers */
-      if (qq.count > 1)
-	{
-	  for (i = j = 0; i < qq.count; i++)
-	    {
-	      p = qq.elements[i];
-	      pn = pool->solvables[p].name;
-	      if (MAPTST(&xp->preferneg, pn))
-		continue;
-	      if (who && MAPTST(&xp->prefernegx, pn))
-		{
-		  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
-		  if (xid && MAPTST(&xp->preferneg, xid))
-		    continue;
-		}
-	      qq.elements[j++] = p;
-	    }
-	  if (j)
-	    queue_truncate(&qq, j);
-	}
+      /* did not find a package to install, only choices left on todo list */
+      if (!xpctx.todo.count)
+	break;
+      expander_dbg(xp, "now doing undecided dependencies\n");
 
-      /* prune pos prefers */
-      if (qq.count > 1)
+      /* prune prefers */
+      for (ti = tc = 0; ti < xpctx.todo.count; ti += 2)
 	{
-	  queue_empty(&posfoundq);
-	  for (i = j = 0; i < qq.count; i++)
+	  Id who = xpctx.todo.elements[ti + 1];
+	  Id *qe = choices.elements + tc + 3;
+	  Id id = choices.elements[tc + 1];
+	  int qn = choices.elements[tc + 2];
+	  whon = who ? pool->solvables[who].name : 0;
+	  if (qn > 1)
+	    qn = prune_neg_prefers(&xpctx, who, qe, qn);
+	  if (qn > 1)
+	    qn = prune_pos_prefers(&xpctx, who, qe, qn);
+	  if (qn > 1 && pool->disttype != DISTTYPE_RPM)
 	    {
-	      p = qq.elements[i];
-	      pn = pool->solvables[p].name;
-	      if (MAPTST(&xp->preferpos, pn))
-		{
-		  queue_push2(&posfoundq, pn, p);
-		  qq.elements[j++] = p;
-		  continue;
-		}
-	      if (who && MAPTST(&xp->preferposx, pn))
-		{
-		  Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
-		  if (xid && MAPTST(&xp->preferpos, xid))
-		    {
-		      queue_push2(&posfoundq, xid, p);
-		      qq.elements[j++] = p;
-		      continue;
-		    }
-		}
+	      if (ISRELDEP(id) && GETRELDEP(pool, id)->flags == REL_OR)
+	        qn = prune_or_dep(&xpctx, id, qe, qn);
 	    }
-	  if (posfoundq.count == 2)
+	  if (qn == 1)
 	    {
-	      queue_empty(&qq);
-	      queue_push(&qq, posfoundq.elements[1]);
+	      p = qe[0];
+	      if (xp->debug)
+		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
+	      queue_push(&toinstall, p);
+	      xpctx.todo.elements[ti] = 0;	/* kill entry */
 	    }
-	  else if (posfoundq.count)
-	    {
-	      /* found a pos prefer, now find first hit */
-	      /* (prefers are ordered) */
-	      for (i = 0; i < xp->preferposq.count; i++)
-		{
-		  Id xid = xp->preferposq.elements[i];
-		  for (j = 0; j < posfoundq.count; j += 2)
-		    if (posfoundq.elements[j] == xid)
-		      break;
-		  if (j < posfoundq.count)
-		    {
-		      queue_empty(&qq);
-		      queue_push(&qq, posfoundq.elements[j + 1]);
-		      break;
-		    }
-		}
-	    }
+	  choices.elements[tc + 2] = qn;
+	  tc += choices.elements[tc];
 	}
+      if (toinstall.count)
+	continue;
 
-      /* prune OR deps */
-      if (qq.count > 1 && ISRELDEP(id) && GETRELDEP(pool, id)->flags == REL_OR)
+      /* prune recommended packages */
+      if (xp->userecommendsforchoices)
+        expander_updaterecommendedmap(&xpctx);
+      if (xpctx.recommended.size)
 	{
-	  Id rid = id;
-	  for (;;)
+	  expander_dbg(xp, "now doing undecided dependencies with recommends\n");
+	  for (ti = tc = 0; ti < xpctx.todo.count; ti += 2)
 	    {
-	      Reldep *rd = 0;
-	      if (ISRELDEP(rid))
-		{
-		  rd = GETRELDEP(pool, rid);
-		  if (rd->flags != REL_OR)
-		    rd = 0;
-		}
-	      if (rd)
-		rid = rd->name;
-	      queue_empty(&qq);
-	      FOR_PROVIDES(p, pp, rid)
-		queue_push(&qq, p);
-	      if (qq.count)
-		break;
-	      if (rd)
-	        rid = rd->evr;
-	      else
-		break;
-	    }
-	}
-
-      if (qq.count > 1 && doamb == 1)
-	{
-	  queue_push2(&todo, id, who);
-	  continue;
-	}
-
-      /* prioritize recommended packages. */
-      if (qq.count > 1 && doamb == 2)
-	{
-	  expander_updaterecommendedmap(xp, &recommended, &recdone, out);
-	  if (recommended.size)
-	    {
-	      for (i = j = 0; i < qq.count; i++)
-		if (MAPTST(&recommended, qq.elements[i]))
-		  qq.elements[j++] = qq.elements[i];
+	      Id who = xpctx.todo.elements[ti + 1];
+	      Id *qe = choices.elements + tc + 3;
+	      Id id = choices.elements[tc + 1];
+	      int qn = choices.elements[tc + 2];
+	      whon = who ? pool->solvables[who].name : 0;
+	      for (i = j = 0; i < qn; i++)
+		if (MAPTST(&xpctx.recommended, qe[i]))
+		  qe[j++] = qe[i];
 	      if (j)
-		queue_truncate(&qq, j);
+		qn = j;
+	      if (qn == 1)
+		{
+		  p = qe[0];
+		  if (xp->debug)
+		    expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
+		  queue_push(&toinstall, p);
+		  xpctx.todo.elements[ti] = 0;	/* kill entry */
+		}
+	      choices.elements[tc + 2] = qn;
+	      tc += choices.elements[tc];
 	    }
+	  if (toinstall.count)
+	    continue;
 	}
 
-      if (qq.count > 1)
+      /* nothing more to prune. record errors. */
+      for (ti = tc = 0; ti < xpctx.todo.count; ti += 2)
 	{
-	  queue_push(&cerrors, ERROR_CHOICE);
-	  queue_push2(&cerrors, id, who);
-	  for (i = 0; i < qq.count; i++)
-	    queue_push(&cerrors, qq.elements[i]);
-	  queue_push(&cerrors, 0);
-	  /* try again later */
-	  queue_push2(&todo, id, who);
-	  continue;
+	  Id who = xpctx.todo.elements[ti + 1];
+	  Id *qe = choices.elements + tc + 3;
+	  Id id = choices.elements[tc + 1];
+	  int qn = choices.elements[tc + 2];
+	  queue_push(&xpctx.errors, ERROR_CHOICE);
+	  queue_push2(&xpctx.errors, id, who);
+	  for (i = 0; i < qn; i++)
+	    queue_push(&xpctx.errors, qe[i]);
+	  queue_push(&xpctx.errors, 0);
 	}
-      if (xp->debug)
-	expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, qq.elements[0]), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-      expander_installed(xp, qq.elements[0], &installed, &conflicts, &conflictsinfo, &cidone, out, &todo);
-      doamb = 0;
-      ambcnt = todo.count;
-      queue_empty(&cerrors);
     }
-  map_free(&installed);
-  map_free(&conflicts);
-  map_free(&recommended);
-  queue_free(&conflictsinfo);
-  nerrors = 0;
-  if (errors.count || cerrors.count)
+
+  map_free(&xpctx.installed);
+  map_free(&xpctx.conflicts);
+  map_free(&xpctx.recommended);
+  map_free(&xpctx.todo_condmap);
+  queue_free(&xpctx.conflictsinfo);
+  queue_free(&xpctx.todo_cond);
+
+  /* revert ignores */
+  xp->ignoreignore = oldignoreignore;
+  if (ignoremapssaved)
     {
-      queue_empty(out);
-      for (i = 0; i < errors.count; i += 3)
-	{
-	  queue_push(out, errors.elements[i]);
-	  queue_push(out, errors.elements[i + 1]);
-	  queue_push(out, errors.elements[i + 2]);
-	  nerrors++;
-	}
-      for (i = 0; i < cerrors.count; )
-	{
-	  queue_push(out, cerrors.elements[i]);
-	  queue_push(out, cerrors.elements[i + 1]);
-	  queue_push(out, cerrors.elements[i + 2]);
-	  i += 3;
-	  while (cerrors.elements[i])
-	    {
-	      queue_push(out, cerrors.elements[i]);
-	      i++;
-	    }
-	  queue_push(out, 0);
-	  i++;
-	  nerrors++;
-	}
+      map_free(&xp->ignored);
+      map_free(&xp->ignoredx);
+      xp->ignored = oldignored;
+      xp->ignoredx = oldignoredx;
     }
   else
     {
-      if (todo.count)
+      for (i = 0; i < revertignore.count; i++)
 	{
-	  fprintf(stderr, "Internal expansion error!\n");
-	  queue_empty(out);
-	  queue_push(out, ERROR_NOPROVIDER);
-	  queue_push(out, 0);
-	  queue_push(out, 0);
+	  id = revertignore.elements[i];
+	  if (id > 0)
+	    MAPCLR(&xp->ignored, id);
+	  else
+	    MAPCLR(&xp->ignoredx, -id);
 	}
     }
-  queue_free(&todo);
+  queue_free(&revertignore);
+
+  /* finish return queue */
+  nerrors = 0;
+  if (xpctx.errors.count)
+    {
+      queue_empty(out);
+      queue_insertn(out, 0, xpctx.errors.count, xpctx.errors.elements);
+      for (i = 0; i < out->count; i += 3)
+	{
+	  nerrors++;
+	  if (out->elements[i] == ERROR_CHOICE)
+	    while (out->elements[i + 3])
+	      i++;
+	}
+    }
+  queue_free(&xpctx.errors);
+  queue_free(&xpctx.todo);
+  queue_free(&toinstall);
   queue_free(&qq);
-  queue_free(&errors);
-  queue_free(&cerrors);
-  queue_free(&posfoundq);
+  queue_free(&choices);
+  queue_free(&xpctx.pruneq);
+  queue_free(&xpctx.cplxq);
+  queue_free(&xpctx.cplxblks);
   return nerrors;
 }
+
+static void
+expander_free(Expander *xp)
+{
+  map_free(&xp->ignored);
+  map_free(&xp->ignoredx);
+  queue_free(&xp->preferposq);
+  map_free(&xp->preferpos);
+  map_free(&xp->preferposx);
+  map_free(&xp->preferneg);
+  map_free(&xp->prefernegx);
+  queue_free(&xp->conflictsq);
+  map_free(&xp->conflicts);
+  solv_free(xp->debugstr);
+  solv_free(xp);
+}
+
+
 
 static void
 set_disttype(Pool *pool, int disttype)
@@ -1257,7 +2175,7 @@ set_disttype_from_location(Pool *pool, Solvable *so)
     set_disttype(pool, disttype);
 }
 
-void
+static void
 create_considered(Pool *pool, Repo *repoonly, Map *considered)
 {
   Id p, pb,*best;
@@ -4314,6 +5232,7 @@ new(char *packname = "BSSolv::pool")
 	    buildservice_dodurl = pool_str2id(pool, "buildservice:dodurl", 1);
 	    expander_directdepsend = pool_str2id(pool, "-directdepsend--", 1);
 	    buildservice_dodcookie = pool_str2id(pool, "buildservice:dodcookie", 1);
+	    parsedep_error = pool_str2id(pool, "--dependency-parse-error", 1);
 	    pool_freeidhashes(pool);
 	    RETVAL = pool;
 	}
@@ -5360,131 +6279,64 @@ expand(BSSolv::expander xp, ...)
 	{
 	    Pool *pool;
 	    int i, nerrors;
-	    Id id, who, conflbuf[16];
-	    Queue revertignore, in, out, confl;
-	    int oldignoreignore = xp->ignoreignore;
-	    int ignoreignore = 0;
-	    Map oldignored, oldignoredx;
-	    int ignoremapssaved = 0;
+	    Id id, who, indepbuf[64];
+	    Queue ignoreq, in, out, indep;
+	    int ignoreignore = 0, directdepsend = 0;
 
-	    queue_init(&revertignore);
+	    queue_init(&ignoreq);
 	    queue_init(&in);
 	    queue_init(&out);
-	    queue_init_buffer(&confl, conflbuf, sizeof(conflbuf)/sizeof(*conflbuf));
+	    queue_init_buffer(&indep, indepbuf, sizeof(indepbuf)/sizeof(*indepbuf));
 	    pool = xp->pool;
 	    if (xp->debug)
 	      expander_dbg(xp, "expand args:");
 	    for (i = 1; i < items; i++)
 	      {
 		char *s = SvPV_nolen(ST(i));
+		int deptype = DEPTYPE_REQUIRES;
+
 		if (xp->debug)
 		  expander_dbg(xp, " %s", s);
+		if (*s == '-' && s[1] == '-')
+		  {
+		    /* expand option */
+		    if (!strcmp(s, "--ignoreignore--"))
+		      ignoreignore = 1;
+		    else if (!strcmp(s, "--directdepsend--"))
+		      directdepsend = 1;
+		    continue;
+		  }
 		if (*s == '-')
 		  {
-		    Id id;
-		    if (s[1] == '-' && !strcmp(s, "--ignoreignore--"))
-		      {
-		        ignoreignore = 1;
-		        continue;
-		      }
+		    /* ignore dependency */
 		    id = pool_str2id(pool, s + 1, 1);
-		    if (id == expander_directdepsend)
+		    queue_push(&ignoreq, id);
+		    continue;
+		  }
+		if (*s == '!')
+		  {
+		    deptype = DEPTYPE_CONFLICTS;
+		    s++;
+		    if (*s == '!')
 		      {
-			queue_push(&in, id);
-			continue;
+			deptype = DEPTYPE_OBSOLETES;
+			s++;
 		      }
-		    queue_push(&revertignore, id);
 		  }
-		else if (*s == '!')
-		  {
-		    Id id = dep2id(pool, s + (s[1] == '!' ? 2 : 1));
-		    queue_push2(&confl, id, s[1] == '!' ? 1 : 0);
-		  }
+		id = dep2id(pool, s);
+		if (deptype == DEPTYPE_REQUIRES && !directdepsend)
+		  queue_push(&in, id);
 		else
-		  {
-		    Id id = dep2id(pool, s);
-		    queue_push(&in, id);
-		  }
+		  queue_push2(&indep, deptype, id);
 	      }
 	    if (xp->debug)
 	      expander_dbg(xp, "\n");
 
-	    if (ignoreignore && revertignore.count)
-	      {
-		/* bad: have direct ignores and project config ignores */
-		oldignored = xp->ignored;
-		oldignoredx = xp->ignoredx;
-		ignoremapssaved = 1;
-		/* clear project config maps */
-		memset(&xp->ignored, 0, sizeof(xp->ignored));
-		memset(&xp->ignoredx, 0, sizeof(xp->ignoredx));
-	      }
-
-	    if (revertignore.count)
-	      {
-		/* mix direct ignores with ignores from project config */
-	        int revertcnt = revertignore.count;
-		for (i = 0; i < revertcnt; i++)
-		  {
-		    const char *ss;
-		    id = revertignore.elements[i];
-		    MAPEXP(&xp->ignored, id);
-		    if (MAPTST(&xp->ignored, id))
-		      continue;
-		    MAPSET(&xp->ignored, id);
-		    queue_push(&revertignore, id);
-		    if ((ss = strchr(pool_id2str(pool, id), ':')) != 0)
-		      {
-			id = pool_str2id(pool, ss + 1, 1);
-			MAPEXP(&xp->ignoredx, id);
-			if (MAPTST(&xp->ignoredx, id))
-			  continue;
-			MAPSET(&xp->ignoredx, id);
-			queue_push(&revertignore, -id);
-		      }
-		  }
-		queue_deleten(&revertignore, 0, revertcnt);
-	      }
-	    else if (ignoreignore)
-	      {
-		/* no direct ignores, disable ignore processing */
-	        xp->ignoreignore = 1;
-	      }
-
-	    MAPEXP(&xp->ignored, pool->ss.nstrings);
-	    MAPEXP(&xp->ignoredx, pool->ss.nstrings);
-	    MAPEXP(&xp->preferpos, pool->ss.nstrings);
-	    MAPEXP(&xp->preferposx, pool->ss.nstrings);
-	    MAPEXP(&xp->preferneg, pool->ss.nstrings);
-	    MAPEXP(&xp->prefernegx, pool->ss.nstrings);
-	    MAPEXP(&xp->conflicts, pool->ss.nstrings);
-
-	    nerrors = expander_expand(xp, &in, &out, &confl);
-
-	    /* revert ignores */
-	    xp->ignoreignore = oldignoreignore;
-	    if (ignoremapssaved)
-	      {
-		map_free(&xp->ignored);
-		map_free(&xp->ignoredx);
-		xp->ignored = oldignored;
-		xp->ignoredx = oldignoredx;
-	      }
-	    else
-	      {
-		for (i = 0; i < revertignore.count; i++)
-		  {
-		    id = revertignore.elements[i];
-		    if (id > 0)
-		      MAPCLR(&xp->ignored, id);
-		    else
-		      MAPCLR(&xp->ignoredx, -id);
-		  }
-	      }
-	    queue_free(&revertignore);
+	    nerrors = expander_expand(xp, &in, &indep, &out, &ignoreq, ignoreignore);
 
 	    queue_free(&in);
-	    queue_free(&confl);
+	    queue_free(&indep);
+	    queue_free(&ignoreq);
 
 	    if (nerrors)
 	      {
@@ -5504,14 +6356,38 @@ expand(BSSolv::expander xp, ...)
 		          sv = newSVpvf("nothing provides %s", pool_dep2str(pool, id));
 			i += 3;
 		      }
-		    else if (type == ERROR_CONFLICTINGPROVIDER)
+		    else if (type == ERROR_ALLCONFLICT)
 		      {
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("conflict for providers of %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("%s conflicts with always true %s", pool_id2str(pool, pool->solvables[who].name), pool_dep2str(pool, id));
 			else
-		          sv = newSVpvf("conflict for package %s", pool_dep2str(pool, id));
+		          sv = newSVpvf("conflict with always true %s", pool_dep2str(pool, id));
+			i += 3;
+		      }
+		    else if (type == ERROR_CONFLICT)
+		      {
+			Id who2 = out.elements[i + 2];
+			who = out.elements[i + 1];
+			if (!who && who2 >= 0)
+		          sv = newSVpvf("conflicts with %s", pool_id2str(pool, pool->solvables[who2].name));
+			else if (who2 < 0)
+		          sv = newSVpvf("%s obsoletes %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+			else
+		          sv = newSVpvf("%s conflicts with %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+			i += 3;
+		      }
+		    else if (type == ERROR_CONFLICT2)
+		      {
+			Id who2 = out.elements[i + 2];
+			who = out.elements[i + 1];
+			if (who2 < 0)
+		          sv = newSVpvf("%s is obsoleted by %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+			else if (who2 > 0)
+		          sv = newSVpvf("%s is in conflict with %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+			else
+		          sv = newSVpvf("%s is in conflict", pool_id2str(pool, pool->solvables[who].name));
 			i += 3;
 		      }
 		    else if (type == ERROR_CONFLICTINGPROVIDERS)
@@ -5521,7 +6397,7 @@ expand(BSSolv::expander xp, ...)
 			if (who)
 			  sv = newSVpvf("conflict for providers of %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
 			else
-			  sv = newSVpvf("conflict for package %s", pool_dep2str(pool, id));
+			  sv = newSVpvf("conflict for providers of %s", pool_dep2str(pool, id));
 			i += 3;
 		      }
 		    else if (type == ERROR_PROVIDERINFO)
@@ -5529,9 +6405,9 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (who2 < 0)
-		          sv = newSVpvf("(provider %s obsoletes installed %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("(provider %s obsoletes %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
 			else
-		          sv = newSVpvf("(provider %s conflicts with installed %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("(provider %s conflicts with %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
 			i += 3;
 		      }
 		    else if (type == ERROR_PROVIDERINFO2)
@@ -5539,11 +6415,11 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (who2 < 0)
-		          sv = newSVpvf("(provider %s is obsoleted by installed %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("(provider %s is obsoleted by %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
 			else if (who2 > 0)
-		          sv = newSVpvf("(provider %s is conflicted by installed %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("(provider %s is in conflict with %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
 			else
-		          sv = newSVpvf("(provider %s is conflicted by the build config)", pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("(provider %s is in conflict)", pool_id2str(pool, pool->solvables[who].name));
 			i += 3;
 		      }
 		    else if (type == ERROR_CHOICE)
@@ -5567,6 +6443,16 @@ expand(BSSolv::expander xp, ...)
 			else
 		          sv = newSVpvf("have choice for %s: %s", pool_dep2str(pool, id), str);
 			i = j + 1;
+		      }
+		    else if (type == ERROR_BADDEPENDENCY)
+		      {
+			id = out.elements[i + 1];
+			who = out.elements[i + 2];
+			if (who)
+		          sv = newSVpvf("cannot parse dependency %s from %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+			else
+		          sv = newSVpvf("cannot parse dependency %s", pool_dep2str(pool, id));
+			i += 3;
 		      }
 		    else
 		      croak("expander: bad error type\n");
@@ -5599,14 +6485,5 @@ debugstr(BSSolv::expander xp)
 void
 DESTROY(BSSolv::expander xp)
     CODE:
-	map_free(&xp->ignored);
-	map_free(&xp->ignoredx);
-	queue_free(&xp->preferposq);
-	map_free(&xp->preferpos);
-	map_free(&xp->preferposx);
-	map_free(&xp->preferneg);
-	map_free(&xp->prefernegx);
-	queue_free(&xp->conflictsq);
-	map_free(&xp->conflicts);
-	solv_free(xp->debugstr);
-	solv_free(xp);
+	expander_free(xp);
+
