@@ -316,19 +316,98 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
     (void)hv_store(hv, key, keyl, newRV_noinc((SV*)av), 0);
 }
 
+static int
+data2pkg(Repo *repo, Repodata *data, HV *hv)
+{
+  Pool *pool = repo->pool;
+  char *str;
+  Id p;
+  Solvable *s;
+
+  str = hvlookupstr(hv, "name", 4);
+  if (!str)
+    return 0;	/* need to have a name */
+  p = repo_add_solvable(repo);
+  s = pool_id2solvable(pool, p);
+  s->name = pool_str2id(pool, str, 1);
+  str = hvlookupstr(hv, "arch", 4);
+  if (!str)
+    str = "";	/* dummy, need to have arch */
+  s->arch = pool_str2id(pool, str, 1);
+  s->evr = makeevr(pool, hvlookupstr(hv, "epoch", 5), hvlookupstr(hv, "version", 7), hvlookupstr(hv, "release", 7));
+  str = hvlookupstr(hv, "path", 4);
+  if (str)
+    {
+      char *ss = strrchr(str, '/');
+      if (ss)
+	{
+	  *ss = 0;
+	  repodata_set_str(data, p, SOLVABLE_MEDIADIR, str);
+	  *ss++ = '/';
+	}
+      else
+	ss = str;
+      repodata_set_str(data, p, SOLVABLE_MEDIAFILE, ss);
+    }
+  str = hvlookupstr(hv, "id", 2);
+  if (str)
+    repodata_set_str(data, p, buildservice_id, str);
+  str = hvlookupstr(hv, "source", 6);
+  if (str)
+    repodata_set_poolstr(data, p, SOLVABLE_SOURCENAME, str);
+  str = hvlookupstr(hv, "hdrmd5", 6);
+  if (str && strlen(str) == 32)
+    repodata_set_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, str);
+  s->provides    = importdeps(hv, "provides", 8, repo);
+  s->obsoletes   = importdeps(hv, "obsoletes", 9, repo);
+  s->conflicts   = importdeps(hv, "conflicts", 9, repo);
+  s->requires    = importdeps(hv, "requires", 8, repo);
+  s->recommends  = importdeps(hv, "recommends", 10, repo);
+  s->suggests    = importdeps(hv, "suggests", 8, repo);
+  s->supplements = importdeps(hv, "supplements", 11, repo);
+  s->enhances    = importdeps(hv, "enhances", 8, repo);
+  if (!s->evr && s->provides)
+    {
+      /* look for self provides */
+      Id pro, *prop = s->repo->idarraydata + s->provides;
+      while ((pro = *prop++) != 0)
+	{
+	  Reldep *rd;
+	  if (!ISRELDEP(pro))
+	    continue;
+	  rd = GETRELDEP(pool, pro);
+	  if (rd->name == s->name && rd->flags == REL_EQ)
+	    s->evr = rd->evr;
+	}
+    }
+  if (s->evr)
+    s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
+  str = hvlookupstr(hv, "checksum", 8);
+  if (str)
+    {
+      char *cp, typebuf[8];
+      Id ctype;
+      if (*str != ':' && (cp = strchr(str, ':')) != 0 && cp - str < sizeof(typebuf))
+	{
+	  strncpy(typebuf, str, cp - str);
+	  typebuf[cp - str] = 0;
+	  ctype = solv_chksum_str2type(typebuf);
+	  if (ctype)
+	    repodata_set_checksum(data, p, SOLVABLE_CHECKSUM, ctype, cp + 1);
+	}
+    }
+  return p;
+}
+
 static void
 data2solvables(Repo *repo, Repodata *data, SV *rsv)
 {
-  Pool *pool = repo->pool;
   AV *rav = 0;
   SSize_t ravi = 0;
   HV *rhv = 0;
   SV *sv;
-  HV *hv;
   char *str, *key;
   I32 keyl;
-  Id p;
-  Solvable *s;
 
   if (SvTYPE(rsv) == SVt_PVAV)
     rav = (AV *)rsv;
@@ -357,81 +436,10 @@ data2solvables(Repo *repo, Repodata *data, SV *rsv)
 	}
       if (!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVHV)
 	continue;
-      hv = (HV *)SvRV(sv);
-      str = hvlookupstr(hv, "name", 4);
-      if (!str)
-	continue;	/* need to have a name */
-      p = repo_add_solvable(repo);
-      s = pool_id2solvable(pool, p);
-      s->name = pool_str2id(pool, str, 1);
-      str = hvlookupstr(hv, "arch", 4);
-      if (!str)
-	str = "";	/* dummy, need to have arch */
-      s->arch = pool_str2id(pool, str, 1);
-      s->evr = makeevr(pool, hvlookupstr(hv, "epoch", 5), hvlookupstr(hv, "version", 7), hvlookupstr(hv, "release", 7));
-      str = hvlookupstr(hv, "path", 4);
-      if (str)
-	{
-	  char *ss = strrchr(str, '/');
-	  if (ss)
-	    {
-	      *ss = 0;
-	      repodata_set_str(data, p, SOLVABLE_MEDIADIR, str);
-	      *ss++ = '/';
-	    }
-	  else
-	    ss = str;
-	  repodata_set_str(data, p, SOLVABLE_MEDIAFILE, ss);
-	}
-      str = hvlookupstr(hv, "id", 2);
-      if (str)
-	repodata_set_str(data, p, buildservice_id, str);
-      str = hvlookupstr(hv, "source", 6);
-      if (str)
-	repodata_set_poolstr(data, p, SOLVABLE_SOURCENAME, str);
-      str = hvlookupstr(hv, "hdrmd5", 6);
-      if (str && strlen(str) == 32)
-	repodata_set_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, str);
-      s->provides    = importdeps(hv, "provides", 8, repo);
-      s->obsoletes   = importdeps(hv, "obsoletes", 9, repo);
-      s->conflicts   = importdeps(hv, "conflicts", 9, repo);
-      s->requires    = importdeps(hv, "requires", 8, repo);
-      s->recommends  = importdeps(hv, "recommends", 10, repo);
-      s->suggests    = importdeps(hv, "suggests", 8, repo);
-      s->supplements = importdeps(hv, "supplements", 11, repo);
-      s->enhances    = importdeps(hv, "enhances", 8, repo);
-      if (!s->evr && s->provides)
-	{
-	  /* look for self provides */
-	  Id pro, *prop = s->repo->idarraydata + s->provides;
-	  while ((pro = *prop++) != 0)
-	    {
-	      Reldep *rd;
-	      if (!ISRELDEP(pro))
-		continue;
-	      rd = GETRELDEP(pool, pro);
-	      if (rd->name == s->name && rd->flags == REL_EQ)
-		s->evr = rd->evr;
-	    }
-	}
-      if (s->evr)
-	s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
-      str = hvlookupstr(hv, "checksum", 8);
-      if (str)
-	{
-	  char *cp, typebuf[8];
-	  Id ctype;
-	  if (*str != ':' && (cp = strchr(str, ':')) != 0 && cp - str < sizeof(typebuf))
-	    {
-	      strncpy(typebuf, str, cp - str);
-	      typebuf[cp - str] = 0;
-	      ctype = solv_chksum_str2type(typebuf);
-	      if (ctype)
-		repodata_set_checksum(data, p, SOLVABLE_CHECKSUM, ctype, cp + 1);
-	    }
-	}
+      data2pkg(repo, data, (HV *)SvRV(sv));
     }
 
+  /* set meta information */
   repodata_set_str(data, SOLVID_META, buildservice_repocookie, REPOCOOKIE);
   str = hvlookupstr(rhv, "/url", 4);
   if (str)
