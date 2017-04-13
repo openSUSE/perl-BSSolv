@@ -18,6 +18,7 @@ sub read_config {
   $config->{'prefer'} = [];
   $config->{'ignore'} = [];
   $config->{'conflict'} = [];
+  $config->{'binarytype'} = 'rpm';
   for my $l (@$cfile) {
     my @l = split(' ', $l);
     next unless @l;
@@ -28,11 +29,22 @@ sub read_config {
       for my $l (@l) {
         push @{$config->{$t}}, $l;
       }
+    } elsif ($l0 eq 'binarytype:') {
+      $config->{'binarytype'} = $l[0];
     } elsif ($l0 !~ /^[#%]/) {
       die("unknown keyword in config: $l0\n");
     }
   }
-  $config->{'binarytype'} = 'rpm';
+  $config->{'ignoreh'} = {};
+  for (@{$config->{'ignore'}}) {
+    if (!/:/) {
+      $config->{'ignoreh'}->{$_} = 1; 
+      next;
+    }
+    my @s = split(/[,:]/, $_); 
+    my $s = shift @s;
+    $config->{'ignoreh'}->{"$s:$_"} = 1 for @s;
+  }
   for (@{$config->{'expandflags'} || []}) {
     if (/^([^:]+):(.*)$/s) {
       $config->{"expandflags:$1"} = $2;
@@ -67,6 +79,10 @@ sub parserepo {
     while (@s) {
       if ($s[0] =~ /^\(/) {
 	push @ss, shiftrich(\@s);
+	$ss[-1] =~ s/ if / <IF> /g;
+	$ss[-1] =~ s/ else / <ELSE> /g;
+	$ss[-1] =~ s/ and / & /g;
+	$ss[-1] =~ s/ or / | /g;
 	next;
       }
       push @ss, shift @s;
@@ -80,7 +96,7 @@ sub parserepo {
     if ($s =~ /^(P|R|C|O|r|s):/) {
       if ($1 eq 'P') {
 	$k++;
-        die unless @ss && $ss[0] =~ /^(\S+) = (\S+)(?:-(\S+))?$/;
+        die unless @ss && $ss[0] =~ /^(\S+) = (\S+?)(?:-(\S+))?$/;
         push @packages, {'name' => $1, 'version' => $2};
         $packages[-1]->{'release'} = $3 if defined $3;
       }
@@ -95,6 +111,7 @@ sub setuptest {
   my ($repo, $conf) = @_;
   my $config = read_config('noarch', [ split("\n", $conf || '') ]);
   my $pool = BSSolv::pool->new();
+  $pool->settype('deb') if $config->{'binarytype'} eq 'deb';
   $config->{'pool'} = $pool;
   $pool->repofromdata("repo", parserepo([ split("\n", $repo) ]));
   $pool->createwhatprovides();
