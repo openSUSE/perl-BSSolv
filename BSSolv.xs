@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2009 - 2017 SUSE Linux Products GmbH
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the same terms as Perl itself.
+ *
+ */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -2077,12 +2084,20 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	}
     }
 
+  /* free data */
   map_free(&xpctx.installed);
   map_free(&xpctx.conflicts);
   map_free(&xpctx.recommended);
   map_free(&xpctx.todo_condmap);
   queue_free(&xpctx.conflictsinfo);
   queue_free(&xpctx.todo_cond);
+  queue_free(&xpctx.todo);
+  queue_free(&toinstall);
+  queue_free(&qq);
+  queue_free(&choices);
+  queue_free(&xpctx.pruneq);
+  queue_free(&xpctx.cplxq);
+  queue_free(&xpctx.cplxblks);
 
   /* revert ignores */
   xp->ignoreignore = oldignoreignore;
@@ -2106,7 +2121,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
     }
   queue_free(&revertignore);
 
-  /* finish return queue */
+  /* finish return queue, count errors */
   nerrors = 0;
   if (xpctx.errors.count)
     {
@@ -2121,14 +2136,121 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	}
     }
   queue_free(&xpctx.errors);
-  queue_free(&xpctx.todo);
-  queue_free(&toinstall);
-  queue_free(&qq);
-  queue_free(&choices);
-  queue_free(&xpctx.pruneq);
-  queue_free(&xpctx.cplxq);
-  queue_free(&xpctx.cplxblks);
   return nerrors;
+}
+
+static Expander *
+expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Queue *conflict, Queue *fileprovides, int debug, int ignoreconflicts, int userecommendsforchoices)
+{
+  Expander *xp;
+  int i, j;
+  Id id, id2;
+  const char *str;
+  Queue q;
+
+  xp = calloc(sizeof(Expander), 1);
+  xp->pool = pool;
+  xp->debug = debug;
+  xp->ignoreconflicts = ignoreconflicts;
+  xp->userecommendsforchoices = userecommendsforchoices;
+
+  queue_init(&xp->preferposq);
+  for (i = 0; i < preferpos->count; i++)
+    {
+      id = preferpos->elements[i];
+      queue_push(&xp->preferposq, id);
+      MAPEXP(&xp->preferpos, id);
+      MAPSET(&xp->preferpos, id);
+      if ((str = strchr(pool_id2str(pool, id), ':')) != 0)
+        {
+          id = pool_str2id(pool, str + 1, 1);
+	  MAPEXP(&xp->preferposx, id);
+	  MAPSET(&xp->preferposx, id);
+        }
+    }
+  for (i = 0; i < preferneg->count; i++)
+    {
+      id = preferneg->elements[i];
+      MAPEXP(&xp->preferneg, id);
+      MAPSET(&xp->preferneg, id);
+      if ((str = strchr(pool_id2str(pool, id), ':')) != 0)
+        {
+          id = pool_str2id(pool, str + 1, 1);
+	  MAPEXP(&xp->prefernegx, id);
+	  MAPSET(&xp->prefernegx, id);
+        }
+    }
+
+  for (i = 0; i < ignore->count; i++)
+    {
+      id = ignore->elements[i];
+      MAPEXP(&xp->ignored, id);
+      MAPSET(&xp->ignored, id);
+      if ((str = strchr(pool_id2str(pool, id), ':')) != 0)
+        {
+          id = pool_str2id(pool, str + 1, 1);
+	  MAPEXP(&xp->ignoredx, id);
+	  MAPSET(&xp->ignoredx, id);
+        }
+    }
+
+  queue_init(&xp->conflictsq);
+  for (i = 0; i < conflict->count; i += 2)
+    {
+      id = conflict->elements[i];
+      id2 = conflict->elements[i + 1];
+      queue_push2(&xp->conflictsq, id, id2);
+      MAPEXP(&xp->conflicts, id);
+      MAPSET(&xp->conflicts, id);
+      MAPEXP(&xp->conflicts, id2);
+      MAPSET(&xp->conflicts, id2);
+    }
+
+  if (fileprovides->count)
+    xp->havefileprovides = 1;
+  queue_init(&q);
+  for (i = 0; i < fileprovides->count; i++)
+    {
+      Id p, pp;
+      id = fileprovides->elements[i];
+      int havenew = 0;
+
+      /* XXX: this modifies the pool, which is somewhat unclean! */
+      /* get old providers */
+      queue_empty(&q);
+      FOR_PROVIDES(p, pp, id)
+        queue_push(&q, p);
+      for (j = i + 1; j < fileprovides->count && (id2 = fileprovides->elements[j]) != 0; j++)
+	{
+	  FOR_PROVIDES(p, pp, id2)
+	    {
+	      int k;
+	      if (pool->solvables[p].name != id2)
+	        continue;		/* match name only */
+	      /* insert sorted */
+	      for (k = 0; j < q.count; j++)
+	        {
+		  if (q.elements[k] == p)
+		    break;
+		  if (q.elements[k] > p)
+		    {
+		      queue_insert(&q, j, p);
+		      havenew = 1;
+		      break;
+		    }
+	        }
+	      if (j == q.count)
+	        {
+		  queue_push(&q, p);
+		  havenew = 1;
+		}
+	    }
+	}
+      if (havenew)
+        pool->whatprovides[id] = pool_queuetowhatprovides(pool, &q);
+    }
+  queue_free(&q);
+  return xp;
 }
 
 static void
@@ -6070,19 +6192,28 @@ updatedoddata(BSSolv::repo repo, HV *rhv = 0)
 
 MODULE = BSSolv		PACKAGE = BSSolv::expander	PREFIX = expander
 
-
 BSSolv::expander
 new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
     CODE:
 	{
 	    SV *sv, **svp;
-	    char *str;
-	    int i, neg;
-	    Id id, id2;
+	    char *str, *p;
+	    int i;
+	    Id id;
 	    Expander *xp;
+	    Queue preferpos;
+	    Queue preferneg;
+	    Queue ignore;
+	    Queue conflict;
+	    Queue fileprovides;
+	    int ignoreconflicts = 0;
+	    int debug = 0;
 
-	    xp = calloc(sizeof(Expander), 1);
-	    xp->pool = pool;
+	    queue_init(&preferpos);
+	    queue_init(&preferneg);
+	    queue_init(&ignore);
+	    queue_init(&conflict);
+	    queue_init(&fileprovides);
 	    svp = hv_fetch(config, "prefer", 6, 0);
 	    sv = svp ? *svp : 0;
 	    if (sv && SvROK(sv) && SvTYPE(SvRV(sv)) == SVt_PVAV)
@@ -6097,37 +6228,10 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 		    str = SvPV_nolen(sv);
 		    if (!str)
 		      continue;
-		    neg = 0;
 		    if (*str == '-')
-		      {
-			neg = 1;
-			str++;
-		      }
-		    id = pool_str2id(pool, str, 1);
-		    id2 = 0;
-		    if ((str = strchr(str, ':')) != 0)
-		      id2 = pool_str2id(pool, str + 1, 1);
-		    if (neg)
-		      {
-			MAPEXP(&xp->preferneg, id);
-			MAPSET(&xp->preferneg, id);
-		        if (id2)
-			  {
-			    MAPEXP(&xp->prefernegx, id2);
-			    MAPSET(&xp->prefernegx, id2);
-			  }
-		      }
+		      queue_push(&preferneg, pool_str2id(pool, str + 1, 1));
 		    else
-		      {
-			queue_push(&xp->preferposq, id);
-			MAPEXP(&xp->preferpos, id);
-			MAPSET(&xp->preferpos, id);
-		        if (id2)
-			  {
-			    MAPEXP(&xp->preferposx, id2);
-			    MAPSET(&xp->preferposx, id2);
-			  }
-		      }
+		      queue_push(&preferpos, pool_str2id(pool, str, 1));
 		  }
 	      }
 	    svp = hv_fetch(config, "ignoreh", 7, 0);
@@ -6136,7 +6240,6 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 	      {
 		HV *hv = (HV *)SvRV(sv);
 		HE *he;
-
 		hv_iterinit(hv);
 		while ((he = hv_iternext(hv)) != 0)
 		  {
@@ -6144,18 +6247,7 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 		    str = hv_iterkey(he, &strl);
 		    if (!str)
 		      continue;
-		 
-		    id = pool_str2id(pool, str, 1);
-		    id2 = 0;
-		    if ((str = strchr(str, ':')) != 0)
-		      id2 = pool_str2id(pool, str + 1, 1);
-		    MAPEXP(&xp->ignored, id);
-		    MAPSET(&xp->ignored, id);
-		    if (id2)
-		      {
-			MAPEXP(&xp->ignoredx, id2);
-		        MAPSET(&xp->ignoredx, id2);
-		      }
+		    queue_push(&ignore, pool_str2id(pool, str, 1));
 		  }
 	      }
 	    svp = hv_fetch(config, "conflict", 8, 0);
@@ -6165,9 +6257,6 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 		AV *av = (AV *)SvRV(sv);
 		for (i = 0; i <= av_len(av); i++)
 		  {
-		    char *p;
-		    Id id2;
-
 		    svp = av_fetch(av, i, 0);
 		    if (!svp)
 		      continue;
@@ -6182,46 +6271,28 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 		    str = p + 1;
 		    while ((p = strchr(str, ',')) != 0)
 		      {
-			id2 = pool_strn2id(pool, str, p - str, 1);
-			queue_push2(&xp->conflictsq, id, id2);
-			MAPEXP(&xp->conflicts, id);
-			MAPSET(&xp->conflicts, id);
-			MAPEXP(&xp->conflicts, id2);
-			MAPSET(&xp->conflicts, id2);
+			queue_push2(&conflict, id, pool_strn2id(pool, str, p - str, 1));
 			str = p + 1;
 		      }
-		    id2 = pool_str2id(pool, str, 1);
-		    queue_push2(&xp->conflictsq, id, id2);
-		    MAPEXP(&xp->conflicts, id);
-		    MAPSET(&xp->conflicts, id);
-		    MAPEXP(&xp->conflicts, id2);
-		    MAPSET(&xp->conflicts, id2);
+		    queue_push2(&conflict, id, pool_str2id(pool, str, 1));
 		  }
 	      }
-	    /* XXX: this modifies the pool, which is a bit unclean! */
 	    svp = hv_fetch(config, "fileprovides", 12, 0);
 	    sv = svp ? *svp : 0;
 	    if (sv && SvROK(sv) && SvTYPE(SvRV(sv)) == SVt_PVHV)
 	      {
 		HV *hv = (HV *)SvRV(sv);
 		I32 strl;
-		Queue q;
 
-		xp->havefileprovides = 1;
 		hv_iterinit(hv);
-		queue_init(&q);
 		while ((sv = hv_iternextsv(hv, &str, &strl)) != 0)
 		  {
 		    AV *av;
-		    Id p, pp;
-		    int havenew = 0;
+		    Id id2;
 
 		    if (!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVAV)
 		      continue;
 		    id = pool_str2id(pool, str, 1);
-		    queue_empty(&q);
-		    FOR_PROVIDES(p, pp, id)
-		      queue_push(&q, p);
 		    av = (AV *)SvRV(sv);
 		    for (i = 0; i <= av_len(av); i++)
 		      {
@@ -6235,46 +6306,34 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 			id2 = pool_str2id(pool, str, 0);
 			if (!id2)
 			  continue;
-			FOR_PROVIDES(p, pp, id2)
+			if (id)
 			  {
-			    int j;
-			    if (pool->solvables[p].name != id2)
-			      continue;		/* match name only */
-			    for (j = 0; j < q.count; j++)
-			      {
-				if (q.elements[j] == p)
-				  break;
-				if (q.elements[j] > p)
-				  {
-				    queue_insert(&q, j, p);
-				    havenew = 1;
-				    break;
-				  }
-			      }
-			    if (j == q.count)
-			      {
-			        queue_push(&q, p);
-				havenew = 1;
-			      }
+			    queue_push(&fileprovides, id);	/* start name block */
+			    id = 0;
 			  }
+			queue_push(&fileprovides, id2);
 		      }
-		    if (havenew)
-		      pool->whatprovides[id] = pool_queuetowhatprovides(pool, &q);
+		    if (id == 0)
+		      queue_push(&fileprovides, 0);	/* had at least one entry, finish name block */
 		  }
-		queue_free(&q);
 	      }
 	    svp = hv_fetch(config, "expandflags:ignoreconflicts", 27, 0);
 	    sv = svp ? *svp : 0;
 	    if (sv && SvTRUE(sv))
-	      xp->ignoreconflicts = 1;
+	      ignoreconflicts = 1;
 	    svp = hv_fetch(config, "expand_dbg", 10, 0);
 	    sv = svp ? *svp : 0;
 	    if (sv && SvTRUE(sv))
-	      xp->debug = 1;
+	      debug = 1;
 	    sv = get_sv("Build::expand_dbg", FALSE);
 	    if (sv && SvTRUE(sv))
-	      xp->debug = 1;
-	    xp->userecommendsforchoices = 1;
+	      debug = 1;
+	    xp = expander_create(pool, &preferpos, &preferneg, &ignore, &conflict, &fileprovides, debug, ignoreconflicts, 1);
+	    queue_free(&preferpos);
+	    queue_free(&preferneg);
+	    queue_free(&ignore);
+	    queue_free(&conflict);
+	    queue_free(&fileprovides);
 	    RETVAL = xp;
 	}
     OUTPUT:
@@ -6489,6 +6548,18 @@ debugstr(BSSolv::expander xp)
     OUTPUT:
 	RETVAL
 
+const char *
+debugstrclr(BSSolv::expander xp)
+	
+    CODE:
+	if (!xp->debugstr)
+	  xp->debugstr = calloc(1, 1);
+	RETVAL = xp->debugstr;
+    OUTPUT:
+	RETVAL
+    CLEANUP:
+	free(xp->debugstr);
+	xp->debugstr = 0;
 
 void
 DESTROY(BSSolv::expander xp)
