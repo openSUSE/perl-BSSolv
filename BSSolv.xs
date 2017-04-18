@@ -34,6 +34,10 @@
 #include "pool_parserpmrichdep.h"
 #endif
 
+#ifndef REL_ERROR
+# define REL_ERROR 27		/* for old libsolv versions */
+#endif
+
 typedef struct _Expander {
   Pool *pool;
 
@@ -94,7 +98,6 @@ static Id buildservice_external;
 static Id buildservice_dodurl;
 static Id expander_directdepsend;
 static Id buildservice_dodcookie;
-static Id parsedep_error;
 
 /* make sure bit n is usable */
 #define MAPEXP(m, n) ((m)->size < (((n) + 8) >> 3) ? map_grow(m, n + 256) : 0)
@@ -249,6 +252,14 @@ dep2id_rec(Pool *pool, char *s)
 }
 
 static Id
+parsedep_error(Pool *pool, const char *s)
+{
+  Id id;
+  id = pool_str2id(pool, s, 1);
+  return pool_rel2id(pool, pool_str2id(pool, "dependency parse error", 1), id, REL_ERROR, 1);
+}
+
+static Id
 dep2id(Pool *pool, char *s)
 {
   Id id;
@@ -263,7 +274,7 @@ dep2id(Pool *pool, char *s)
   else
     id = dep2id_rec(pool, s);
   if (!id)
-    id = pool_rel2id(pool, parsedep_error, pool_str2id(pool, s, 1), REL_EQ, 1);
+    id = parsedep_error(pool, s);
   return id;
 }
 
@@ -283,7 +294,7 @@ importdeps(HV *hv, const char *key, int keyl, Repo *repo)
 	    {
 	      Id id = testcase_str2dep(pool, str);
 	      if (!id)
-	        id = pool_rel2id(pool, parsedep_error, pool_str2id(pool, str, 1), REL_EQ, 1);
+		id = parsedep_error(pool, str);
 	      off = repo_addid_dep(repo, off, id, 0);
 	    }
 	}
@@ -1347,7 +1358,7 @@ printf("expander_installed %s\n", pool_solvid2str(pool, p));
 	{
 	  if (req == SOLVABLE_PREREQMARKER)
 	    continue;
-	  if (ISRELDEP(req) && GETRELDEP(pool, req)->name == parsedep_error)
+	  if (ISRELDEP(req) && GETRELDEP(pool, req)->flags == REL_ERROR)
 	    {
 	      queue_push(&xpctx->errors, ERROR_BADDEPENDENCY);
 	      queue_push2(&xpctx->errors, GETRELDEP(pool, req)->evr, p);
@@ -1373,7 +1384,7 @@ printf("expander_installed %s\n", pool_solvid2str(pool, p));
 	  while ((con = *conp++) != 0)
 	    {
 	      Id p2, pp2;
-	      if (ISRELDEP(con) && GETRELDEP(pool, con)->name == parsedep_error)
+	      if (ISRELDEP(con) && GETRELDEP(pool, con)->flags == REL_ERROR)
 		{
 		  queue_push(&xpctx->errors, ERROR_BADDEPENDENCY);
 		  queue_push2(&xpctx->errors, GETRELDEP(pool, con)->evr, p);
@@ -1750,7 +1761,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	{
 	  int deptype = indep->elements[i];
 	  Id dep = indep->elements[i + 1];
-	  if (ISRELDEP(dep) && GETRELDEP(pool, dep)->name == parsedep_error)
+	  if (ISRELDEP(dep) && GETRELDEP(pool, dep)->flags == REL_ERROR)
 	    {
 	      queue_push(&xpctx.errors, ERROR_BADDEPENDENCY);
 	      queue_push2(&xpctx.errors, GETRELDEP(pool, dep)->evr, 0);
@@ -1781,7 +1792,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   for (i = 0; i < in->count; i++)
     {
       id = in->elements[i];
-      if (ISRELDEP(id) && GETRELDEP(pool, id)->name == parsedep_error)
+      if (ISRELDEP(id) && GETRELDEP(pool, id)->flags == REL_ERROR)
 	{
 	  queue_push(&xpctx.errors, ERROR_BADDEPENDENCY);
 	  queue_push2(&xpctx.errors, GETRELDEP(pool, id)->evr, 0);
@@ -5362,7 +5373,6 @@ new(char *packname = "BSSolv::pool")
 	    buildservice_dodurl = pool_str2id(pool, "buildservice:dodurl", 1);
 	    expander_directdepsend = pool_str2id(pool, "-directdepsend--", 1);
 	    buildservice_dodcookie = pool_str2id(pool, "buildservice:dodcookie", 1);
-	    parsedep_error = pool_str2id(pool, "--dependency-parse-error", 1);
 	    pool_freeidhashes(pool);
 	    RETVAL = pool;
 	}
