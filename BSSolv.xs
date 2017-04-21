@@ -2239,26 +2239,22 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
 	      if (pool->solvables[p].name != id2)
 	        continue;		/* match name only */
 	      /* insert sorted */
-	      for (k = 0; j < q.count; j++)
+	      for (k = 0; ; k++)
 	        {
-		  if (q.elements[k] == p)
-		    break;
-		  if (q.elements[k] > p)
+		  if (k == q.count || q.elements[k] > p)
 		    {
-		      queue_insert(&q, j, p);
+		      queue_insert(&q, k, p);
 		      havenew = 1;
 		      break;
 		    }
+		  if (q.elements[k] == p)
+		    break;
 	        }
-	      if (j == q.count)
-	        {
-		  queue_push(&q, p);
-		  havenew = 1;
-		}
 	    }
 	}
       if (havenew)
         pool->whatprovides[id] = pool_queuetowhatprovides(pool, &q);
+      i = j;
     }
   queue_free(&q);
   return xp;
