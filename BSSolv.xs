@@ -38,6 +38,10 @@
 # define REL_ERROR 27		/* for old libsolv versions */
 #endif
 
+#define EXPANDER_DEBUG_ALL		(1 << 0)
+#define EXPANDER_DEBUG_STDOUT		(1 << 1)
+#define EXPANDER_DEBUG_STR		(1 << 2)
+
 typedef struct _Expander {
   Pool *pool;
 
@@ -902,23 +906,30 @@ expander_dbg(Expander *xp, const char *format, ...)
   va_list args;
   char buf[1024];
   int l;
+
   if (!xp->debug)
     return;
   va_start(args, format);
   vsnprintf(buf, sizeof(buf), format, args);
   va_end(args);
-  printf("%s", buf);
   l = strlen(buf);
-  if (buf[0] != ' ' || (l && buf[l - 1] == '\n'))
-    fflush(stdout);
-  if (l >= xp->debugstrf)	/* >= because of trailing \0 */
+  if ((xp->debug & (EXPANDER_DEBUG_ALL | EXPANDER_DEBUG_STDOUT)) != 0)
     {
-      xp->debugstr = solv_realloc(xp->debugstr, xp->debugstrl + l + 1024);
-      xp->debugstrf = l + 1024;
+      printf("%s", buf);
+      if (buf[0] != ' ' || (l && buf[l - 1] == '\n'))
+        fflush(stdout);
     }
-  strcpy(xp->debugstr + xp->debugstrl, buf);
-  xp->debugstrl += l;
-  xp->debugstrf -= l;
+  if ((xp->debug & (EXPANDER_DEBUG_ALL | EXPANDER_DEBUG_STR)) != 0)
+    {
+      if (l >= xp->debugstrf)	/* >= because of trailing \0 */
+	{
+	  xp->debugstr = solv_realloc(xp->debugstr, xp->debugstrl + l + 1024);
+	  xp->debugstrf = l + 1024;
+	}
+      strcpy(xp->debugstr + xp->debugstrl, buf);
+      xp->debugstrl += l;
+      xp->debugstrf -= l;
+    }
 }
 
 static const char *
@@ -1570,7 +1581,7 @@ prune_neg_prefers(ExpanderCtx *xpctx, Id who, Id *e, int n)
 }
 
 static int
-prune_pos_prefers(ExpanderCtx *xpctx, Id who, Id *e, int n)
+prune_pos_prefers(ExpanderCtx *xpctx, Id who, Id *e, int n, int domulti)
 {
   Expander *xp = xpctx->xp;
   Queue *pruneq = &xpctx->pruneq;
@@ -1597,6 +1608,8 @@ prune_pos_prefers(ExpanderCtx *xpctx, Id who, Id *e, int n)
     return n;
   if (pruneq->count > 2)
     {
+      if (!domulti)
+	return n;
       /* pos prefers are ordered, the first one wins */
       for (i = 0; i < xp->preferposq.count; i++)
 	{
@@ -1861,6 +1874,9 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  pass = 0;
 	  continue;
 	}
+
+      expander_dbg(xp, "--- now doing normal dependencies\n");
+
       if (pass == 1)
 	queue_empty(&choices);
 	
@@ -2014,7 +2030,8 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
       /* did not find a package to install, only choices left on todo list */
       if (!xpctx.todo.count)
 	break;
-      expander_dbg(xp, "now doing undecided dependencies\n");
+
+      expander_dbg(xp, "--- now doing undecided dependencies\n");
 
       /* prune prefers */
       for (ti = tc = 0; ti < xpctx.todo.count; ti += 2)
@@ -2027,7 +2044,31 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  if (qn > 1)
 	    qn = prune_neg_prefers(&xpctx, who, qe, qn);
 	  if (qn > 1)
-	    qn = prune_pos_prefers(&xpctx, who, qe, qn);
+	    qn = prune_pos_prefers(&xpctx, who, qe, qn, 0);
+	  if (qn == 1)
+	    {
+	      p = qe[0];
+	      if (xp->debug)
+		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
+	      queue_push(&toinstall, p);
+	      xpctx.todo.elements[ti] = 0;	/* kill entry */
+	    }
+	  choices.elements[tc + 2] = qn;
+	  tc += choices.elements[tc];
+	}
+      if (toinstall.count)
+	continue;
+
+      /* prune pos prefers with domulti and debian or */
+      for (ti = tc = 0; ti < xpctx.todo.count; ti += 2)
+	{
+	  Id who = xpctx.todo.elements[ti + 1];
+	  Id *qe = choices.elements + tc + 3;
+	  Id id = choices.elements[tc + 1];
+	  int qn = choices.elements[tc + 2];
+	  whon = who ? pool->solvables[who].name : 0;
+	  if (qn > 1)
+	    qn = prune_pos_prefers(&xpctx, who, qe, qn, 1);
 	  if (qn > 1 && pool->disttype != DISTTYPE_RPM)
 	    {
 	      if (ISRELDEP(id) && GETRELDEP(pool, id)->flags == REL_OR)
@@ -6329,11 +6370,14 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 	      ignoreconflicts = 1;
 	    svp = hv_fetch(config, "expand_dbg", 10, 0);
 	    sv = svp ? *svp : 0;
-	    if (sv && SvTRUE(sv))
-	      debug = 1;
-	    sv = get_sv("Build::expand_dbg", FALSE);
-	    if (sv && SvTRUE(sv))
-	      debug = 1;
+	    if (sv)
+	      debug = SvIV(sv);
+	    else
+	      {
+		sv = get_sv("Build::expand_dbg", FALSE);
+		if (sv)
+		  debug = SvIV(sv);
+	      }
 	    xp = expander_create(pool, &preferpos, &preferneg, &ignore, &conflict, &fileprovides, debug, ignoreconflicts, 1);
 	    queue_free(&preferpos);
 	    queue_free(&preferneg);
