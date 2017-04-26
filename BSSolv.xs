@@ -6379,12 +6379,12 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 	      ignoreconflicts = 1;
 	    svp = hv_fetch(config, "expand_dbg", 10, 0);
 	    sv = svp ? *svp : 0;
-	    if (sv)
+	    if (sv && SvOK(sv))
 	      debug = SvIV(sv);
 	    else
 	      {
 		sv = get_sv("Build::expand_dbg", FALSE);
-		if (sv)
+		if (sv && SvOK(sv))
 		  debug = SvIV(sv);
 	      }
 	    xp = expander_create(pool, &preferpos, &preferneg, &ignore, &conflict, &fileprovides, debug, ignoreconflicts, 1);
