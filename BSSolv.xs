@@ -932,6 +932,15 @@ expander_dbg(Expander *xp, const char *format, ...)
     }
 }
 
+static void
+expander_clrdbg(Expander *xp)
+{
+  if (xp->debugstr)
+    free(xp->debugstr);
+  xp->debugstr = 0;
+  xp->debugstrl = xp->debugstrf = 0;
+}
+
 static const char *
 expander_solvid2name(Expander *xp, Id p)
 {
@@ -6589,12 +6598,16 @@ expand(BSSolv::expander xp, ...)
 	    queue_free(&out);
 	}
 
+void
+debug(BSSolv::expander xp, const char *str)
+    CODE:
+	expander_dbg(xp, "%s", str);
+
+
 const char *
 debugstr(BSSolv::expander xp)
     CODE:
-	if (!xp->debugstr)
-	  xp->debugstr = calloc(1, 1);
-	RETVAL = xp->debugstr;
+	RETVAL = xp->debugstr ? xp->debugstr : "";
     OUTPUT:
 	RETVAL
 
@@ -6602,14 +6615,11 @@ const char *
 debugstrclr(BSSolv::expander xp)
 	
     CODE:
-	if (!xp->debugstr)
-	  xp->debugstr = calloc(1, 1);
-	RETVAL = xp->debugstr;
+	RETVAL = xp->debugstr ? xp->debugstr : "";
     OUTPUT:
 	RETVAL
     CLEANUP:
-	free(xp->debugstr);
-	xp->debugstr = 0;
+	expander_clrdbg(xp);
 
 void
 DESTROY(BSSolv::expander xp)
