@@ -1,4 +1,11 @@
 -------------------------------------------------------------------
+Wed Apr 26 11:17:48 CEST 2017 - mls@suse.de
+
+- update to version 0.32.0 (perl module 0.12 version)
+  * support rich rpm dependencies
+  * make expander more deterministic
+
+-------------------------------------------------------------------
 Mon Mar  6 12:58:16 CET 2017 - mls@suse.de
 
 - bring back dep2id for now (perl module 0.11 version)

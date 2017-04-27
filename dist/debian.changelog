@@ -1,3 +1,10 @@
+libbssolv-perl (0.4.0-12) unstable; urgency=low
+
+  * support rich rpm dependencies
+  * make expander more deterministic
+
+ -- Michael Schroeder <mls@suse.de>  Wed, 26 Apr 2017 11:17:48 +0200
+
 libbssolv-perl (0.4.0-11) unstable; urgency=low
 
   * bring back dep2id for now

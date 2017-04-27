@@ -17,41 +17,25 @@
 
 
 Name:           perl-BSSolv
-Version:        0.31.0
+Version:        0.32.0
 Release:        0
 Url:            https://github.com/openSUSE/perl-BSSolv
-Source:         libsolv-0.6.15.tar.gz
+Source:         libsolv-0.6.27.tar.gz
 Source1:        Makefile.PL
 Source2:        BSSolv.pm
 Source3:        BSSolv.xs
 Source4:        typemap
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 
-%if 0%{?mandriva_version}
-# force this version on mandriva
-BuildRequires:  libneon0.26-devel
-%endif
 %if 0%{?fedora_version}
-BuildRequires:  db4-devel
 BuildRequires:  perl-devel
 %endif
 %if 0%{?suse_version}
 Requires:       perl = %perl_version
-%if 0%{?suse_version} < 1030
-BuildRequires:  expat
-%else
-BuildRequires:  libexpat-devel
-%endif
-%else
-BuildRequires:  expat-devel
-%endif
-%if 0%{?rhel_version} || 0%{?centos_version}
-BuildRequires:  db4-devel
 %endif
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  perl
-BuildRequires:  rpm-devel
 BuildRequires:  xz-devel
 BuildRequires:  zlib-devel
 #RHEL6 moved ExtUtils::MakeMaker outside the main perl package
@@ -81,10 +65,6 @@ export CFLAGS="$RPM_OPT_FLAGS"
 export CXXFLAGS="$CFLAGS"
 
 CMAKE_FLAGS=
-%if 0%{?fedora_version} || 0%{?rhel_version} || 0%{?centos_version}
-CMAKE_FLAGS="-DFEDORA=1"
-%endif
-
 %if 0%{?rhel_version} || 0%{?centos_version}
 CFLAGS="$CFLAGS -DUSE_OWN_QSORT"
 %endif
@@ -94,7 +74,7 @@ cmake   $CMAKE_FLAGS \
 	-DDISABLE_SHARED=1 \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_SKIP_RPATH=1 \
-	-DENABLE_RPMDB=1 \
+	-DENABLE_RPMPKG=1 \
 	-DENABLE_DEBIAN=1 \
 	-DENABLE_ARCHREPO=1 \
 	-DENABLE_LZMA_COMPRESSION=1 \
