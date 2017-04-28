@@ -1925,12 +1925,12 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	      p = qq.elements[i];
 	      if (MAPTST(&xpctx.installed, p))
 		break;
-	      if (!xp->ignoreignore)
+	      if (who && !xp->ignoreignore)
 		{
 		  Id pn = pool->solvables[p].name;
 		  if (MAPTST(&xp->ignored, pn))
 		    break;
-		  if (who && MAPTST(&xp->ignoredx, pn))
+		  if (MAPTST(&xp->ignoredx, pn))
 		    {
 		      Id xid = pool_str2id(pool, pool_tmpjoin(pool, pool_id2str(pool, whon), ":", pool_id2str(pool, pn)), 0);
 		      if (xid && MAPTST(&xp->ignored, xid))
