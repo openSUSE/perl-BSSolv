@@ -2489,6 +2489,87 @@ static int metacmp(const void *ap, const void *bp)
   return a - b;
 }
 
+static char *
+slurp(FILE *fp, int *lenp)
+{
+  int l, ll;
+  char *buf = 0; 
+  int bufl = 0; 
+
+  for (l = 0; ; l += ll)
+    {    
+      if (bufl - l < 4096)
+        {
+          bufl += 4096;
+	  if (bufl < 0)
+	    {
+	      buf = solv_free(buf);
+	      l = 0;
+	      break;
+	    }
+          buf = solv_realloc(buf, bufl);
+        }
+      ll = fread(buf + l, 1, bufl - l, fp); 
+      if (ll < 0) 
+        {
+          buf = solv_free(buf);
+          l = 0; 
+          break;
+        }
+      if (ll == 0)
+        {
+          buf[l] = 0;   /* always zero-terminate */
+          break;
+        }
+    }    
+  if (lenp)
+    *lenp = l; 
+  return buf; 
+}
+
+
+Id
+repo_add_obsbinlnk(Repo *repo, const char *path, int flags)
+{
+  Repodata *data;
+  FILE *fp;
+  char *buf;
+  int len;
+  SV *sv;
+  unsigned char *src;
+  STRLEN srcl;
+  Id p;
+
+  if ((fp = fopen(path, "r")) == 0)
+    return 0;
+  buf = slurp(fp, &len);
+  fclose(fp);
+  if (!buf || len <= 0)
+    return 0;
+  src = (unsigned char *)buf;
+  srcl = len;
+  sv = 0;
+  if (srcl >= 7 && src[0] == 'p' && src[1] == 's' && src[2] == 't' && src[3] == '0' && (src[4] & 1) == 1 && src[4] >= 5) {
+    src += 6;
+    srcl -= 6;
+    sv = retrieve(&src, &srcl, 0);
+  }
+  free(buf);
+  if (!sv)
+    return 0;
+  if (SvTYPE(sv) != SVt_PVHV)
+    {
+      SvREFCNT_dec(sv);
+      return 0;
+    }
+  data = repo_add_repodata(repo, flags);
+  p = data2pkg(repo, data, (HV *)sv);
+  SvREFCNT_dec(sv);
+  if (!(flags & REPO_NO_INTERNALIZE))
+    repodata_internalize(data);
+  return p;
+}
+
 #ifndef REPO_NO_LOCATION
 # define REPO_NO_LOCATION 0
 #endif
@@ -2507,6 +2588,8 @@ repodata_addbin(Repodata *data, char *prefix, char *s, int sl, char *sid)
     p = repo_add_rpm(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|RPM_ADD_WITH_PKGID|RPM_ADD_NO_FILELIST|RPM_ADD_NO_RPMLIBREQS);
   else if (sl >= 4 && !strcmp(s + sl - 4, ".deb"))
     p = repo_add_deb(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|DEBS_ADD_WITH_PKGID);
+  else if (sl >= 10 && !strcmp(s + sl - 10, ".obsbinlnk"))
+    p = repo_add_obsbinlnk(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION);
 #ifdef ARCH_ADD_WITH_PKGID
   else if (sl >= 11 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz")))
     p = repo_add_arch_pkg(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|ARCH_ADD_WITH_PKGID);
@@ -5495,6 +5578,7 @@ repofrombins(BSSolv::pool pool, char *name, char *dir, ...)
 		  continue;
 		if (strcmp(s + sl - 4, ".rpm")
                     && strcmp(s + sl - 4, ".deb")
+                    && (sl < 10 || strcmp(s + sl - 10, ".obsbinlnk"))
 #ifdef ARCH_ADD_WITH_PKGID
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.gz"))
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.xz"))
@@ -6094,6 +6178,7 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
 		  continue;
 		if (strcmp(s + sl - 4, ".rpm")
                     && strcmp(s + sl - 4, ".deb")
+                    && (sl < 10 || strcmp(s + sl - 10, ".obsbinlnk"))
 #ifdef ARCH_ADD_WITH_PKGID
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.gz"))
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.xz"))
