@@ -2589,7 +2589,14 @@ repodata_addbin(Repodata *data, char *prefix, char *s, int sl, char *sid)
   else if (sl >= 4 && !strcmp(s + sl - 4, ".deb"))
     p = repo_add_deb(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|DEBS_ADD_WITH_PKGID);
   else if (sl >= 10 && !strcmp(s + sl - 10, ".obsbinlnk"))
-    p = repo_add_obsbinlnk(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION);
+    {
+      p = repo_add_obsbinlnk(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION);
+      /* do not overwrite location from obsbinlnk file */
+      solv_free(path);
+      if (p)
+        repodata_set_str(data, p, buildservice_id, sid);
+      return p;
+    }
 #ifdef ARCH_ADD_WITH_PKGID
   else if (sl >= 11 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz")))
     p = repo_add_arch_pkg(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|ARCH_ADD_WITH_PKGID);
