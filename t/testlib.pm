@@ -13,22 +13,15 @@ sub expand {
 # dummy version of Build's read_config
 sub read_config {
   my ($arch, $cfile) = @_;
-  my $config = {};
-  $config->{'expandflags'} = [];
-  $config->{'prefer'} = [];
-  $config->{'ignore'} = [];
-  $config->{'conflict'} = [];
-  $config->{'binarytype'} = 'rpm';
+  my $config = { 'binarytype' => 'rpm' };
+  $config->{$_} = [] for qw{prefer ignore conflict expandflags};
   for my $l (@$cfile) {
     my @l = split(' ', $l);
     next unless @l;
     my $ll = shift @l;
     my $l0 = lc($ll);
     if ($l0 eq 'prefer:' || $l0 eq 'ignore:' || $l0 eq 'conflict:' || $l0 eq 'expandflags:') {
-      my $t = substr($l0, 0, -1);
-      for my $l (@l) {
-        push @{$config->{$t}}, $l;
-      }
+      push @{$config->{substr($l0, 0, -1)}}, @l;
     } elsif ($l0 eq 'binarytype:') {
       $config->{'binarytype'} = $l[0];
     } elsif ($l0 !~ /^[#%]/) {
