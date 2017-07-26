@@ -617,7 +617,7 @@ invert_depblocks(ExpanderCtx *xpctx, Queue *bq, int start, int r)
 }
 
 static int
-mix_depblocks(ExpanderCtx *xpctx, Queue *bq, int start, int start2, int flags)
+distribute_depblocks(ExpanderCtx *xpctx, Queue *bq, int start, int start2, int flags)
 {
   int i, j, end2 = bq->count;
   for (i = start; i < start2; i++)
@@ -628,7 +628,7 @@ mix_depblocks(ExpanderCtx *xpctx, Queue *bq, int start, int start2, int flags)
 	  int bqcnt4 = bq->count;
 	  int k = i;
 
-	  /* mix i block with j block, both blocks are sorted */
+	  /* distribute i block with j block, both blocks are sorted */
 	  while (bq->elements[k] && bq->elements[j])
 	    {
 	      if (bq->elements[k] < bq->elements[j])
@@ -735,9 +735,7 @@ static int normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags);
 static int
 normalize_dep_or(ExpanderCtx *xpctx, Id dep1, Id dep2, Queue *bq, int flags, int invflags)
 {
-  int bqcnt, bqcnt2;
-  int r1, r2;
-  bqcnt = bq->count;
+  int r1, r2, bqcnt2, bqcnt = bq->count;
   r1 = normalize_dep(xpctx, dep1, bq, flags);
   if (r1 == 1)
     return 1;		/* early exit */
@@ -755,16 +753,14 @@ normalize_dep_or(ExpanderCtx *xpctx, Id dep1, Id dep2, Queue *bq, int flags, int
   if (r2 == 0)
     return r1;
   if ((flags & CPLXDEPS_TODNF) == 0)
-    return mix_depblocks(xpctx, bq, bqcnt, bqcnt2, flags);
+    return distribute_depblocks(xpctx, bq, bqcnt, bqcnt2, flags);
   return -1;
 }
 
 static int
 normalize_dep_and(ExpanderCtx *xpctx, Id dep1, Id dep2, Queue *bq, int flags, int invflags)
 {
-  int bqcnt, bqcnt2;
-  int r1, r2;
-  bqcnt = bq->count;
+  int r1, r2, bqcnt2, bqcnt = bq->count;
   r1 = normalize_dep(xpctx, dep1, bq, flags);
   if (r1 == 0)
     return 0;		/* early exit */
@@ -782,42 +778,31 @@ normalize_dep_and(ExpanderCtx *xpctx, Id dep1, Id dep2, Queue *bq, int flags, in
   if (r2 == 1)
     return r1;
   if ((flags & CPLXDEPS_TODNF) != 0)
-    return mix_depblocks(xpctx, bq, bqcnt, bqcnt2, flags);
+    return distribute_depblocks(xpctx, bq, bqcnt, bqcnt2, flags);
   return -1;
 }
 
 static int
 normalize_dep_if_else(ExpanderCtx *xpctx, Id dep1, Id dep2, Id dep3, Queue *bq, int flags)
 {
+  /* A IF (B ELSE C) -> (A OR ~B) AND (C OR B) */
+  int r1, r2, bqcnt2, bqcnt = bq->count;
+  r1 = normalize_dep_or(xpctx, dep1, dep2, bq, flags, CPLXDEPS_TODNF);
+  if (r1 == 0)
+    return 0;		/* early exit */
+  bqcnt2 = bq->count;
+  r2 = normalize_dep_or(xpctx, dep2, dep3, bq, flags, 0);
+  if (r1 == 0 || r2 == 0)
+    {
+      queue_truncate(bq, bqcnt);
+      return 0;
+    }
+  if (r1 == 1)
+    return r2;
+  if (r2 == 1)
+    return r1;
   if ((flags & CPLXDEPS_TODNF) != 0)
-    {
-      /* we want OR: A IF (B ELSE C) -> (A AND B) OR (A AND C) OR (~B AND C) */
-      int bqcnt = bq->count;
-      int r1 = normalize_dep_and(xpctx, dep1, dep2, bq, flags, 0);
-      int r2 = normalize_dep_and(xpctx, dep1, dep3, bq, flags, 0);
-      int r3 = normalize_dep_and(xpctx, dep3, dep2, bq, flags, CPLXDEPS_TODNF);
-      if (r1 == 1 || r2 == 1 || r3 == 1)
-	{
-	  queue_truncate(bq, bqcnt);
-	  return 1;
-	}
-      if (r1 == 0 && r2 == 0 && r3 == 0)
-	return 0;
-    }
-  else
-    {
-      /* we want AND: A IF (B ELSE C) -> (A OR ~B) AND (C OR B) */
-      int bqcnt = bq->count;
-      int r1 = normalize_dep_or(xpctx, dep1, dep2, bq, flags, CPLXDEPS_TODNF);
-      int r2 = normalize_dep_or(xpctx, dep2, dep3, bq, flags, 0);
-      if (r1 == 0 || r2 == 0)
-	{
-	  queue_truncate(bq, bqcnt);
-	  return 0;
-	}
-      if (r1 == 1 && r2 == 1)
-	return 1;
-    }
+    return distribute_depblocks(xpctx, bq, bqcnt, bqcnt2, flags);
   return -1;
 }
 
@@ -834,10 +819,9 @@ normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
       Reldep *rd = GETRELDEP(pool, dep);
       if (rd->flags == REL_AND || rd->flags == REL_OR || rd->flags == REL_COND)
 	{
-	  int rdflags = rd->flags;
-	  Id evr = rd->evr;
-	  if (rdflags == REL_COND)
+	  if (rd->flags == REL_COND)
 	    {
+	      Id evr = rd->evr;
 	      if (ISRELDEP(evr))
 		{
 		  Reldep *rd2 = GETRELDEP(pool, evr);
@@ -846,9 +830,9 @@ normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
 		}
 	      return normalize_dep_or(xpctx, rd->name, rd->evr, bq, flags, CPLXDEPS_TODNF);
 	    }
-	  if (rdflags == REL_OR)
+	  if (rd->flags == REL_OR)
 	    return normalize_dep_or(xpctx, rd->name, rd->evr, bq, flags, 0);
-	  if (rdflags == REL_AND)
+	  if (rd->flags == REL_AND)
 	    return normalize_dep_and(xpctx, rd->name, rd->evr, bq, flags, 0);
 	}
     }
