@@ -1,3 +1,11 @@
+libbssolv-perl (0.4.0-13) unstable; urgency=low
+
+  * regression fix for ignores of direct deps
+  * support for obsbinlnk
+  * support for unordered repositories
+
+ -- Michael Schroeder <mls@suse.de>  Tue, 1 Aug 2017 14:14:48 +0200
+
 libbssolv-perl (0.4.0-12) unstable; urgency=low
 
   * support rich rpm dependencies

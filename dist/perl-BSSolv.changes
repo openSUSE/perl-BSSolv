@@ -1,4 +1,12 @@
 -------------------------------------------------------------------
+Tue Aug  1 14:14:48 CEST 2017 - mls@suse.de
+
+- update to version 0.33.0 (perl module 0.13 version)
+  * regression fix for ignores of direct deps
+  * support for obsbinlnk
+  * support for unordered repositories
+
+-------------------------------------------------------------------
 Wed Apr 26 11:17:48 CEST 2017 - mls@suse.de
 
 - update to version 0.32.0 (perl module 0.12 version)

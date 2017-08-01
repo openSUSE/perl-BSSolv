@@ -17,7 +17,7 @@
 
 
 Name:           perl-BSSolv
-Version:        0.32.0
+Version:        0.33.0
 Release:        0
 Url:            https://github.com/openSUSE/perl-BSSolv
 Source:         libsolv-0.6.27.tar.gz
@@ -78,12 +78,17 @@ cmake   $CMAKE_FLAGS \
 	-DENABLE_DEBIAN=1 \
 	-DENABLE_ARCHREPO=1 \
 	-DENABLE_LZMA_COMPRESSION=1 \
+	-DENABLE_COMPLEX_DEPS=1 \
 	-DMULTI_SEMANTICS=1
 pushd src ; make ; popd
 pushd ext ; make ; popd
 popd
+
 perl Makefile.PL --bundled-libsolv
 make
+
+%check
+make test
 
 %install
 make DESTDIR=$RPM_BUILD_ROOT install_vendor
