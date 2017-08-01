@@ -102,6 +102,7 @@ static Id buildservice_external;
 static Id buildservice_dodurl;
 static Id expander_directdepsend;
 static Id buildservice_dodcookie;
+static Id buildservice_annotation;
 
 /* make sure bit n is usable */
 #define MAPEXP(m, n) ((m)->size < (((n) + 8) >> 3) ? map_grow(m, n + 256) : 0)
@@ -418,6 +419,9 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
 	    repodata_set_checksum(data, p, SOLVABLE_CHECKSUM, ctype, cp + 1);
 	}
     }
+  str = hvlookupstr(hv, "annotation", 10);
+  if (str && strlen(str) < 100000)
+    repodata_set_str(data, p, buildservice_annotation, str);
   return p;
 }
 
@@ -2347,7 +2351,7 @@ set_disttype_from_location(Pool *pool, Solvable *so)
 }
 
 static void
-create_considered(Pool *pool, Repo *repoonly, Map *considered)
+create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepos)
 {
   Id p, pb,*best;
   Solvable *s, *sb;
@@ -2369,11 +2373,18 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
 	  if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
 	    continue;
 	  pb = best[s->name];
-	  if (pb)
+	  if (unorderedrepos && pb && s->repo->priority != pool->solvables[pb].repo->priority)
 	    {
+	      if (s->repo->priority < pool->solvables[pb].repo->priority)
+		continue;	/* lower prio, ignore */
+	    }
+	  else if (pb)
+	    {
+	      /* we already have that name. decide which one to take */
 	      sb = pool->solvables + pb;
-	      if (s->repo != sb->repo)
+	      if (!unorderedrepos && s->repo != sb->repo)
 		continue;	/* first repo wins */
+	      /* take package if it has a higher arch/version */
 	      if (s->arch != sb->arch)
 		{
 		  int r;
@@ -2407,6 +2418,7 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
 		    }
 		}
 	    }
+
 	   if (dodrepo)
 	    {
 	      /* we only consider dod packages */
@@ -2419,7 +2431,7 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered)
 	  best[s->name] = p;
 	  MAPSET(considered, p);
 	}
-      /* dodrepos have a second pass: replace dod entries with downloaded ones */
+      /* dodrepos have a second pass: replace dod entries with identical downloaded ones */
       if (dodrepo)
 	{
 	  const char *bsid;
@@ -5493,6 +5505,7 @@ new(char *packname = "BSSolv::pool")
 	    buildservice_dodurl = pool_str2id(pool, "buildservice:dodurl", 1);
 	    expander_directdepsend = pool_str2id(pool, "-directdepsend--", 1);
 	    buildservice_dodcookie = pool_str2id(pool, "buildservice:dodcookie", 1);
+	    buildservice_annotation = pool_str2id(pool, "buildservice:annotation", 1);
 	    pool_freeidhashes(pool);
 	    RETVAL = pool;
 	}
@@ -5611,7 +5624,7 @@ repofromdata(BSSolv::pool pool, char *name, SV *rv)
 	RETVAL
 
 void
-createwhatprovides(BSSolv::pool pool)
+createwhatprovides(BSSolv::pool pool, int unorderedrepos = 0)
     CODE:
 	if (pool->considered)
 	  {
@@ -5619,7 +5632,7 @@ createwhatprovides(BSSolv::pool pool)
 	    solv_free(pool->considered);
 	  }
 	pool->considered = solv_calloc(sizeof(Map), 1);
-	create_considered(pool, 0, pool->considered);
+	create_considered(pool, 0, pool->considered, unorderedrepos);
 	pool_createwhatprovides(pool);
 
 void
@@ -5869,7 +5882,17 @@ pkg2data(BSSolv::pool pool, int p)
 	    ss = solvable_lookup_str(s, buildservice_id);
 	    if (ss)
 	      (void)hv_store(RETVAL, "id", 2, newSVpv(ss, 0), 0);
+	    ss = solvable_lookup_str(s, buildservice_annotation);
+	    if (ss)
+	      (void)hv_store(RETVAL, "annotation", 10, newSVpv(ss, 0), 0);
 	}
+    OUTPUT:
+	RETVAL
+
+const char *
+pkg2annotation(BSSolv::pool pool, int p)
+    CODE:
+	RETVAL = solvable_lookup_str(pool->solvables + p, buildservice_annotation);
     OUTPUT:
 	RETVAL
 
@@ -6014,7 +6037,7 @@ pkgnames(BSSolv::repo repo)
 	    Solvable *s;
 	    Map c;
 	
-	    create_considered(pool, repo, &c);
+	    create_considered(pool, repo, &c, 0);
 	    EXTEND(SP, 2 * repo->nsolvables);
 	    FOR_REPO_SOLVABLES(repo, p, s)
 	      {
@@ -6037,7 +6060,7 @@ pkgpaths(BSSolv::repo repo)
 	    const char *str;
 	    unsigned int medianr;
 	
-	    create_considered(pool, repo, &c);
+	    create_considered(pool, repo, &c, 0);
 	    EXTEND(SP, 2 * repo->nsolvables);
 	    FOR_REPO_SOLVABLES(repo, p, s)
 	      {
@@ -6320,6 +6343,11 @@ updatedoddata(BSSolv::repo repo, HV *rhv = 0)
 		data2solvables(repo, data, (SV *)rhv);
 	    repo_internalize(repo);
 	}
+
+void
+setpriority(BSSolv::repo repo, int priority)
+    PPCODE:
+	repo->priority = priority;
 
 
 MODULE = BSSolv		PACKAGE = BSSolv::expander	PREFIX = expander
