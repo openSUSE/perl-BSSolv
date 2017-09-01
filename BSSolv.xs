@@ -2027,16 +2027,22 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 		    continue;
 		  if (MAPTST(&xpctx.installed, p))
 		    continue;
+		  if (!pool_installable(pool, s))
+		    continue;
 		  if (xpctx.conflicts.size && MAPTST(&xpctx.conflicts, p))
 		    continue;
-		  if (!pool_installable(pool, s))
+		  if (s->conflicts && expander_checkconflicts(&xpctx, p, s->repo->idarraydata + s->conflicts, 0, 0) != 0)
+		    continue;
+		  if (s->obsoletes && expander_checkconflicts(&xpctx, p, s->repo->idarraydata + s->obsoletes, 1, 0) != 0)
 		    continue;
 		  supp = s->repo->idarraydata + s->supplements;
 		  while ((sup = *supp++) != 0)
 		    if (expander_dep_fulfilled(&xpctx, sup))
 		      break;
-		  if (sup)
-		    queue_push(&toinstall, p);
+		  if (!sup)
+		    continue;
+		  expander_dbg(xp, "added %s because it supplements %s\n", expander_solvid2name(xp, p), pool_dep2str(pool, sup));
+		  queue_push(&toinstall, p);
 		}
 	      if (toinstall.count)
 		continue;
@@ -2198,7 +2204,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	continue;
 
       if (!xpctx.todo.count)
-	break;
+	continue;
 
       /* did not find a package to install, only choices left on todo list */
       if (pass == 0)
