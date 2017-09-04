@@ -37,6 +37,9 @@
 #ifndef REL_ERROR
 # define REL_ERROR 27		/* for old libsolv versions */
 #endif
+#ifndef REL_UNLESS
+# define REL_UNLESS 29		/* for old libsolv versions */
+#endif
 
 #define EXPANDER_DEBUG_ALL		(1 << 0)
 #define EXPANDER_DEBUG_STDOUT		(1 << 1)
@@ -728,7 +731,7 @@ pool_is_complex_dep_rd(Pool *pool, Reldep *rd)
 {
   for (;;)
     {
-      if (rd->flags == REL_AND || rd->flags == REL_COND)        /* those two are the complex ones */
+      if (rd->flags == REL_AND || rd->flags == REL_COND || rd->flags == REL_UNLESS)        /* those are the complex ones */
         return 1;
       if (rd->flags != REL_OR)
         return 0;
@@ -828,6 +831,30 @@ normalize_dep_if_else(ExpanderCtx *xpctx, Id dep1, Id dep2, Id dep3, Queue *bq, 
   return -1;
 }
 
+static int
+normalize_dep_unless_else(ExpanderCtx *xpctx, Id dep1, Id dep2, Id dep3, Queue *bq, int flags)
+{
+  /* A UNLESS (B ELSE C) -> (A AND ~B) OR (C AND B) */
+  int r1, r2, bqcnt2, bqcnt = bq->count;
+  r1 = normalize_dep_and(xpctx, dep1, dep2, bq, flags, CPLXDEPS_TODNF);
+  if (r1 == 1)
+    return 1;		/* early exit */
+  bqcnt2 = bq->count;
+  r2 = normalize_dep_and(xpctx, dep2, dep3, bq, flags, 0);
+  if (r1 == 1 || r2 == 1)
+    {
+      queue_truncate(bq, bqcnt);
+      return 1;
+    }
+  if (r1 == 0)
+    return r2;
+  if (r2 == 0)
+    return r1;
+  if ((flags & CPLXDEPS_TODNF) == 0)
+    return distribute_depblocks(xpctx, bq, bqcnt, bqcnt2, flags);
+  return -1;
+}
+
 static int expander_isignored(Expander *xp, Solvable *s, Id req);
 
 static int
@@ -839,24 +866,32 @@ normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
   if (pool_is_complex_dep(pool, dep))
     {
       Reldep *rd = GETRELDEP(pool, dep);
-      if (rd->flags == REL_AND || rd->flags == REL_OR || rd->flags == REL_COND)
+      if (rd->flags == REL_COND)
 	{
-	  if (rd->flags == REL_COND)
+	  Id evr = rd->evr;
+	  if (ISRELDEP(evr))
 	    {
-	      Id evr = rd->evr;
-	      if (ISRELDEP(evr))
-		{
-		  Reldep *rd2 = GETRELDEP(pool, evr);
-		  if (rd2->flags == REL_ELSE)
-		    return normalize_dep_if_else(xpctx, rd->name, rd2->name, rd2->evr, bq, flags);
-		}
-	      return normalize_dep_or(xpctx, rd->name, rd->evr, bq, flags, CPLXDEPS_TODNF);
+	      Reldep *rd2 = GETRELDEP(pool, evr);
+	      if (rd2->flags == REL_ELSE)
+		return normalize_dep_if_else(xpctx, rd->name, rd2->name, rd2->evr, bq, flags);
 	    }
-	  if (rd->flags == REL_OR)
-	    return normalize_dep_or(xpctx, rd->name, rd->evr, bq, flags, 0);
-	  if (rd->flags == REL_AND)
-	    return normalize_dep_and(xpctx, rd->name, rd->evr, bq, flags, 0);
+	  return normalize_dep_or(xpctx, rd->name, rd->evr, bq, flags, CPLXDEPS_TODNF);
 	}
+      if (rd->flags == REL_UNLESS)
+	{
+	  Id evr = rd->evr;
+	  if (ISRELDEP(evr))
+	    {
+	      Reldep *rd2 = GETRELDEP(pool, evr);
+	      if (rd2->flags == REL_ELSE)
+		return normalize_dep_unless_else(xpctx, rd->name, rd2->name, rd2->evr, bq, flags);
+	    }
+	  return normalize_dep_and(xpctx, rd->name, rd->evr, bq, flags, CPLXDEPS_TODNF);
+	}
+      if (rd->flags == REL_OR)
+	return normalize_dep_or(xpctx, rd->name, rd->evr, bq, flags, 0);
+      if (rd->flags == REL_AND)
+	return normalize_dep_and(xpctx, rd->name, rd->evr, bq, flags, 0);
     }
 
   if (xpctx->ignore_s && (flags & CPLXDEPS_TODNF) == 0)
@@ -1593,8 +1628,24 @@ expander_dep_fulfilled(ExpanderCtx *xpctx, Id dep)
 		  return expander_dep_fulfilled(xpctx, rd2->evr);
 		}
 	    }
-	  if (expander_dep_fulfilled(xpctx, rd->name))
+	  if (expander_dep_fulfilled(xpctx, rd->name))	/* A OR ~B */
 	    return 1;
+	  return !expander_dep_fulfilled(xpctx, rd->evr);
+	}
+      if (rd->flags == REL_UNLESS)
+	{
+	  if (ISRELDEP(rd->evr))
+	    {
+	      Reldep *rd2 = GETRELDEP(pool, rd->evr);
+	      if (rd2->flags == REL_ELSE)
+		{
+		  if (!expander_dep_fulfilled(xpctx, rd2->name))
+		    return expander_dep_fulfilled(xpctx, rd->name);
+		  return expander_dep_fulfilled(xpctx, rd2->evr);
+		}
+	    }
+	  if (!expander_dep_fulfilled(xpctx, rd->name))	/* A AND ~B */
+	    return 0;
 	  return !expander_dep_fulfilled(xpctx, rd->evr);
 	}
       if (rd->flags == REL_AND)

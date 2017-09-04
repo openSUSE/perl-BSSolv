@@ -74,6 +74,7 @@ sub parserepo {
 	push @ss, shiftrich(\@s);
 	$ss[-1] =~ s/ if / <IF> /g;
 	$ss[-1] =~ s/ else / <ELSE> /g;
+	$ss[-1] =~ s/ unless / <UNLESS> /g;
 	$ss[-1] =~ s/ and / & /g;
 	$ss[-1] =~ s/ or / | /g;
 	next;
