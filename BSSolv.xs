@@ -45,11 +45,12 @@
 #define EXPANDER_DEBUG_STDOUT		(1 << 1)
 #define EXPANDER_DEBUG_STR		(1 << 2)
 
-#define EXPANDER_OPTION_IGNOREIGNORE		(1 << 0)
-#define EXPANDER_OPTION_IGNORECONFLICTS		(1 << 1)
-#define EXPANDER_OPTION_DORECOMMENDS		(1 << 2)
-#define EXPANDER_OPTION_DOSUPPLEMENTS		(1 << 3)
-#define EXPANDER_OPTION_USERECOMMENDSFORCHOICES	(1 << 4)
+#define EXPANDER_OPTION_IGNOREIGNORE			(1 << 0)
+#define EXPANDER_OPTION_IGNORECONFLICTS			(1 << 1)
+#define EXPANDER_OPTION_DORECOMMENDS			(1 << 2)
+#define EXPANDER_OPTION_DOSUPPLEMENTS			(1 << 3)
+#define EXPANDER_OPTION_USERECOMMENDSFORCHOICES		(1 << 4)
+#define EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES	(1 << 5)
 
 typedef struct _Expander {
   Pool *pool;
@@ -79,6 +80,7 @@ typedef struct _Expander {
   int ignoreconflicts;
   int ignoreignore;
   int userecommendsforchoices;
+  int usesupplementsforchoices;
   int dorecommends;
   int dosupplements;
 } Expander;
@@ -105,6 +107,7 @@ typedef struct _ExpanderCtx {
   int ignoreconflicts;
   int ignoreignore;
   int userecommendsforchoices;
+  int usesupplementsforchoices;
   int dorecommends;
   int dosupplements;
 
@@ -1877,6 +1880,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   xpctx.ignoreignore = options & EXPANDER_OPTION_IGNOREIGNORE ? 1 : xp->ignoreignore;
   xpctx.ignoreconflicts = options & EXPANDER_OPTION_IGNORECONFLICTS ? 1 : xp->ignoreconflicts;
   xpctx.userecommendsforchoices = options & EXPANDER_OPTION_USERECOMMENDSFORCHOICES ? 1 : xp->userecommendsforchoices;
+  xpctx.usesupplementsforchoices = options & EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES ? 1 : xp->usesupplementsforchoices;
   xpctx.dorecommends = options & EXPANDER_OPTION_DORECOMMENDS ? 1 : xp->dorecommends;
   xpctx.dosupplements = options & EXPANDER_OPTION_DOSUPPLEMENTS ? 1 : xp->dosupplements;
   map_init(&xpctx.installed, pool->nsolvables);
@@ -2353,7 +2357,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  if (toinstall.count)
 	    continue;
 	}
-      if (xpctx.dosupplements)
+      if (xpctx.usesupplementsforchoices)
 	{
 	  expander_dbg(xp, "now doing undecided dependencies with supplements\n");
 	  for (ti = tc = 0; ti < xpctx.todo.count; ti += 2)
@@ -2464,6 +2468,7 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
   xp->ignoreignore = options & EXPANDER_OPTION_IGNOREIGNORE ? 1 : 0;
   xp->ignoreconflicts = options & EXPANDER_OPTION_IGNORECONFLICTS ? 1 : 0;
   xp->userecommendsforchoices = options & EXPANDER_OPTION_USERECOMMENDSFORCHOICES ? 1 : 0;
+  xp->usesupplementsforchoices = options & EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES ? 1 : 0;
   xp->dorecommends = options & EXPANDER_OPTION_DORECOMMENDS ? 1 : 0;
   xp->dosupplements = options & EXPANDER_OPTION_DOSUPPLEMENTS ? 1 : 0;
 
@@ -6753,7 +6758,7 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 	    svp = hv_fetch(config, "expandflags:dosupplements", 25, 0);
 	    sv = svp ? *svp : 0;
 	    if (sv && SvTRUE(sv))
-	      options |= EXPANDER_OPTION_DOSUPPLEMENTS;
+	      options |= EXPANDER_OPTION_DOSUPPLEMENTS | EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES;
 	    svp = hv_fetch(config, "expand_dbg", 10, 0);
 	    sv = svp ? *svp : 0;
 	    if (sv && SvOK(sv))
@@ -6811,7 +6816,7 @@ expand(BSSolv::expander xp, ...)
 		    else if (!strcmp(s, "--dorecommends--"))
 		      options |= EXPANDER_OPTION_DORECOMMENDS;
 		    else if (!strcmp(s, "--dosupplements--"))
-		      options |= EXPANDER_OPTION_DOSUPPLEMENTS;
+		      options |= EXPANDER_OPTION_DOSUPPLEMENTS | EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES;
 		    continue;
 		  }
 		if (*s == '-')
