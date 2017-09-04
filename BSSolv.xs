@@ -2395,6 +2395,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  for (i = 0; i < qn; i++)
 	    queue_push(&xpctx.errors, qe[i]);
 	  queue_push(&xpctx.errors, 0);
+	  tc += choices.elements[tc];
 	}
     }
 
