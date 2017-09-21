@@ -1853,6 +1853,19 @@ expander_growmaps(Expander *xp)
   MAPEXP(&xp->conflicts, pool->ss.nstrings);
 }
 
+static Id
+str2id_dup(Pool *pool, const char *str)
+{
+  char buf[256];
+  size_t l = strlen(str);
+  if (l < 256) {
+    memcpy(buf, str, l + 1);
+    return pool_str2id(pool, buf, 1);
+  } else {
+    return pool_str2id(pool, pool_tmpjoin(pool, str, 0, 0), 1);
+  }
+}
+
 static int
 expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignoreq, int options)
 {
@@ -1928,7 +1941,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  queue_push(&revertignore, id);
 	  if ((ss = strchr(pool_id2str(pool, id), ':')) != 0)
 	    {
-	      id = pool_str2id(pool, ss + 1, 1);
+	      id = str2id_dup(pool, ss + 1);
 	      MAPEXP(&xp->ignoredx, id);
 	      if (MAPTST(&xp->ignoredx, id))
 		continue;
@@ -2482,7 +2495,7 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
       MAPSET(&xp->preferpos, id);
       if ((str = strchr(pool_id2str(pool, id), ':')) != 0)
         {
-          id = pool_str2id(pool, str + 1, 1);
+          id = str2id_dup(pool, str + 1);
 	  MAPEXP(&xp->preferposx, id);
 	  MAPSET(&xp->preferposx, id);
         }
@@ -2494,7 +2507,7 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
       MAPSET(&xp->preferneg, id);
       if ((str = strchr(pool_id2str(pool, id), ':')) != 0)
         {
-          id = pool_str2id(pool, str + 1, 1);
+          id = str2id_dup(pool, str + 1);
 	  MAPEXP(&xp->prefernegx, id);
 	  MAPSET(&xp->prefernegx, id);
         }
@@ -2507,7 +2520,7 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
       MAPSET(&xp->ignored, id);
       if ((str = strchr(pool_id2str(pool, id), ':')) != 0)
         {
-          id = pool_str2id(pool, str + 1, 1);
+          id = str2id_dup(pool, str + 1);
 	  MAPEXP(&xp->ignoredx, id);
 	  MAPSET(&xp->ignoredx, id);
         }
@@ -5979,6 +5992,20 @@ const char *
 pkg2name(BSSolv::pool pool, int p)
     CODE:
 	RETVAL = pool_id2str(pool, pool->solvables[p].name);
+    OUTPUT:
+	RETVAL
+
+const char *
+pkg2evr(BSSolv::pool pool, int p)
+    CODE:
+	RETVAL = pool_id2str(pool, pool->solvables[p].evr);
+    OUTPUT:
+	RETVAL
+
+const char *
+pkg2arch(BSSolv::pool pool, int p)
+    CODE:
+	RETVAL = pool_id2str(pool, pool->solvables[p].arch);
     OUTPUT:
 	RETVAL
 
