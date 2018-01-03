@@ -4951,33 +4951,51 @@ MODULE = BSSolv		PACKAGE = BSSolv
 
 void
 depsort(HV *deps, SV *mapp, SV *cycp, ...)
+    ALIAS:
+	depsort2 = 1
     PPCODE:
 	{
 	    int i, j, k, cy, cycstart, nv;
+	    int pkgstart = 3;
 	    SV *sv, **svp;
+	    SV *pkg2srcp = 0;
 	    Id id, *e;
 	    Id *mark;
 	    char **names;
+	    char **depnames;
 	    Hashtable ht;
 	    Hashval h, hh, hm;
 	    HV *mhv = 0;
+	    HV *pkg2srchv = 0;
 
 	    Queue edata;
 	    Queue vedge;
 	    Queue todo;
 	    Queue cycles;
 
-	    if (items == 3)
+	    if (ix)
+	      {
+		/* called as depsort2 */
+		if (items < 4)
+		  XSRETURN_EMPTY; /* nothing to sort */
+		pkgstart = 4;
+		pkg2srcp = cycp;
+		cycp = ST(3);
+	      }
+	    if (items == pkgstart)
 	      XSRETURN_EMPTY; /* nothing to sort */
-	    if (items == 4)
+	    if (items == pkgstart + 1)
 	      {
 		/* only one item */
-		char *s = SvPV_nolen(ST(3));
+		char *s = SvPV_nolen(ST(pkgstart));
 		EXTEND(SP, 1);
 		sv = newSVpv(s, 0);
 		PUSHs(sv_2mortal(sv));
 	        XSRETURN(1); /* nothing to sort */
 	      }
+
+	    if (pkg2srcp && SvROK(pkg2srcp) && SvTYPE(SvRV(pkg2srcp)) == SVt_PVHV)
+	      pkg2srchv = (HV *)SvRV(pkg2srcp);
 
 	    if (mapp && SvROK(mapp) && SvTYPE(SvRV(mapp)) == SVt_PVHV)
 	      mhv = (HV *)SvRV(mapp);
@@ -4989,9 +5007,11 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 
 	    hm = mkmask(items);
 	    ht = solv_calloc(hm + 1, sizeof(*ht));
-	    names = solv_calloc(items, sizeof(char *));
+	    names = depnames = solv_calloc(items, sizeof(char *));
+
+	    /* create pkgname -> edge hash, store edge -> pkgname data */
 	    nv = 1;
-	    for (i = 3; i < items; i++)
+	    for (i = pkgstart; i < items; i++)
 	      {
 		char *s = SvPV_nolen(ST(i));
 		h = strhash(s) & hm;
@@ -5007,6 +5027,30 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 		id = nv++;
 		ht[h] = id;
 		names[id] = s;
+	      }
+
+	    if (pkg2srchv)
+	      {
+		/* redo the hash with src names instead of pkg names */
+		depnames = solv_calloc(nv, sizeof(char *));
+		memset(ht, 0, (hm + 1) * sizeof(*ht));
+		for (i = 1; i < nv; i++)
+		  {
+		    char *s = names[i];
+		    svp = hv_fetch(pkg2srchv, s, strlen(s), 0);
+		    if (svp)
+		      {
+			char *ns = SvPV_nolen(*svp);
+			if (ns)
+			  s = ns;
+		      }
+		    depnames[i] = s;
+		    h = strhash(s) & hm;
+		    hh = HASHCHAIN_START;
+		    while ((id = ht[h]) != 0)
+		      h = HASHCHAIN_NEXT(h, hh, hm);
+		    ht[h] = i;
+		  }
 	      }
 
 	    /* we now know all vertices, create edges */
@@ -5048,20 +5092,23 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 			hh = HASHCHAIN_START;
 			while ((id = ht[h]) != 0)
 			  {
-			    if (!strcmp(names[id], s))
-			      break;
+			    if (!strcmp(depnames[id], s))
+			      {
+				if (id != i)
+				  queue_push(&edata, id);
+				if (names == depnames)
+				  break;	/* no other entry with same name */
+			      }
 			    h = HASHCHAIN_NEXT(h, hh, hm);
 			  }
-			if (!id)
-			  continue;	/* not known, ignore */
-			if (id == i)
-			  continue;	/* no self edge */
-			queue_push(&edata, id);
 		      }
 		  }
 		queue_push(&edata, 0);
 	      }
+	    /* we no longer need the hash or the depnames */
 	    solv_free(ht);
+	    if (depnames != names)
+	      depnames = solv_free(depnames);
 
 	    if (0)
 	      {
