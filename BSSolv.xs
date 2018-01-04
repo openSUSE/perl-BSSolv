@@ -4972,6 +4972,7 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 	    Queue vedge;
 	    Queue todo;
 	    Queue cycles;
+	    Map edgeunifymap;
 
 	    if (ix)
 	      {
@@ -5056,11 +5057,13 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 	    /* we now know all vertices, create edges */
 	    queue_push(&vedge, 0);
 	    queue_push(&edata, 0);
+	    map_init(&edgeunifymap, nv);
 	    for (i = 1; i < nv; i++)
 	      {
+		int edgestart = edata.count;
 		svp = hv_fetch(deps, names[i], strlen(names[i]), 0);
 		sv = svp ? *svp : 0;
-		queue_push(&vedge, edata.count);
+		queue_push(&vedge, edgestart);
 		if (sv && SvROK(sv) && SvTYPE(SvRV(sv)) == SVt_PVAV)
 		  {
 		    AV *av = (AV *)SvRV(sv);
@@ -5094,8 +5097,11 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 			  {
 			    if (!strcmp(depnames[id], s))
 			      {
-				if (id != i)
-				  queue_push(&edata, id);
+				if (id != i && !MAPTST(&edgeunifymap, id))
+				  {
+				    MAPSET(&edgeunifymap, id);
+				    queue_push(&edata, id);
+				  }
 				if (names == depnames)
 				  break;	/* no other entry with same name */
 			      }
@@ -5103,9 +5109,18 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 			  }
 		      }
 		  }
-		queue_push(&edata, 0);
+		for (j = edgestart; j < edata.count; j++)
+		  {
+#ifdef MAPCLR_AT
+		    MAPCLR_AT(&edgeunifymap, edata.elements[j]);
+#else
+		    MAPCLR(&edgeunifymap, edata.elements[j]);
+#endif
+		  }
+		queue_push(&edata, 0);	/* terminate edge array */
 	      }
-	    /* we no longer need the hash or the depnames */
+	    /* free no longer needed stuff */
+	    map_free(&edgeunifymap);
 	    solv_free(ht);
 	    if (depnames != names)
 	      depnames = solv_free(depnames);
