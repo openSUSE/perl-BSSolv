@@ -1,4 +1,10 @@
 -------------------------------------------------------------------
+Mon Jan  8 15:13:45 CET 2018 - mls@suse.de
+
+- update to version 0.34.0 (perl module 0.14 version)
+  * add depsort2 function
+
+-------------------------------------------------------------------
 Tue Aug  1 14:14:48 CEST 2017 - mls@suse.de
 
 - update to version 0.33.0 (perl module 0.13 version)

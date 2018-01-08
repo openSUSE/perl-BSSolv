@@ -17,10 +17,10 @@
 
 
 Name:           perl-BSSolv
-Version:        0.33.0
+Version:        0.34.0
 Release:        0
 Url:            https://github.com/openSUSE/perl-BSSolv
-Source:         libsolv-0.6.27.tar.gz
+Source:         libsolv-0.6.30.tar.gz
 Source1:        Makefile.PL
 Source2:        BSSolv.pm
 Source3:        BSSolv.xs

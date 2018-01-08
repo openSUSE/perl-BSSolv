@@ -1,3 +1,9 @@
+libbssolv-perl (0.4.0-14) unstable; urgency=low
+
+  * add depsort2 function
+
+ -- Michael Schroeder <mls@suse.de>  Mon, 8 Jan 2018 15:13:45 +0100
+
 libbssolv-perl (0.4.0-13) unstable; urgency=low
 
   * regression fix for ignores of direct deps
