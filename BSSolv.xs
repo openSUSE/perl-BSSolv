@@ -128,6 +128,8 @@ static Id expander_directdepsend;
 static Id buildservice_dodcookie;
 static Id buildservice_annotation;
 
+static int genmetaalgo;
+
 /* make sure bit n is usable */
 #define MAPEXP(m, n) ((m)->size < (((n) + 8) >> 3) ? map_grow(m, n + 256) : 0)
 
@@ -2743,10 +2745,10 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
 }
 
 struct metaline {
-  char *l;
-  int lastoff;
-  int nslash;
-  int killed;
+  char *l;		/* pointer to line */
+  int lastoff;		/* line offset of last path element */
+  int nslash;		/* number of slashes */
+  int killed;		/* 1: line has been killed. 2: because of a cycle package */
 };
 
 static int metacmp(const void *ap, const void *bp)
@@ -5243,6 +5245,19 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 	    solv_free(names);
 	}
 
+int
+setgenmetaalgo(int algo)
+    CODE:
+	if (algo < 0)
+	    algo = 1;
+	if (algo > 1)
+	    croak("BSSolv::setgenmetaalgo: unsupported algo %d\n", algo);
+	genmetaalgo = algo;
+	RETVAL = algo;
+    OUTPUT:
+	RETVAL
+
+
 void
 gen_meta(AV *subp, ...)
     PPCODE:
@@ -5328,7 +5343,7 @@ gen_meta(AV *subp, ...)
 		  }
 		if (cycle)
 		  {
-		    lp->killed = 1;
+		    lp->killed = 1;	/* killed because line includes a subpackage */
 		    if (cycle > 1)	/* ignore self cycles */
 		      queue_push(&cycles, i);
 		  }
@@ -5344,9 +5359,9 @@ gen_meta(AV *subp, ...)
 		char *cycledata = 0;
 		int cycledatalen = 0;
 
+		/* create hash of cycle packages */
 		cycledata = solv_extend(cycledata, cycledatalen, 1, 1, 255);
-		cycledata[0] = 0;
-		cycledatalen += 1;
+		cycledata[cycledatalen++] = 0;
 		hm = mkmask(cycles.count);
 		ht = solv_calloc(hm + 1, sizeof(*ht));
 		for (i = 0; i < cycles.count; i++)
@@ -5364,18 +5379,23 @@ gen_meta(AV *subp, ...)
 			  break;
 		        h = HASHCHAIN_NEXT(h, hh, hm);
 		      }
-		    if (id)
-		      continue;
-		    cycledata = solv_extend(cycledata, cycledatalen, strlen(s) + 1, 1, 255);
-		    ht[h] = cycledatalen;
-		    strcpy(cycledata + cycledatalen, s);
-		    cycledatalen += strlen(s) + 1;
+		    if (!id)
+		      {
+			int l = strlen(s);
+			cycledata = solv_extend(cycledata, cycledatalen, l + 1, 1, 255);
+			ht[h] = cycledatalen;	/* point to name */
+			strcpy(cycledata + cycledatalen, s);
+			cycledatalen += l + 1;
+		      }
 		    if (se)
 		      *se = '/';
 		  }
+
 		for (i = 0, lp = lines; i < nlines; i++, lp++)
 		  {
-		    if (lp->killed || !lp->nslash)
+		    if (!lp->nslash)
+		      continue;
+		    if (lp->killed && genmetaalgo == 0)
 		      continue;
 		    lo = strchr(lp->l + 34, '/') + 1;
 		    for (s2 = lo; *s2; s2++)
@@ -5393,12 +5413,12 @@ gen_meta(AV *subp, ...)
 			  *s2 = '/';
 			  if (id)
 			    {
-			      lp->killed = 1;
+			      lp->killed = 2;	/* killed because it containes a cycle package */
 			      break;
 			    }
 			  lo = s2 + 1;
 			}
-		    if (lp->killed)
+		    if (lp->killed == 2)
 		      continue;
 		    h = strhash(lo) & hm;
 		    hh = HASHCHAIN_START;
@@ -5409,14 +5429,12 @@ gen_meta(AV *subp, ...)
 		        h = HASHCHAIN_NEXT(h, hh, hm);
 		      }
 		    if (id)
-		      {
-		        lp->killed = 1;
-		      }
+		      lp->killed = 2;	/* killed because it containes a cycle package */
 		  }
 		solv_free(ht);
 		cycledata = solv_free(cycledata);
-		queue_free(&cycles);
 	      }
+	    queue_free(&cycles);
 
 	    /* cycles are pruned, now sort array */
 	    if (nlines > 1)
@@ -5427,7 +5445,10 @@ gen_meta(AV *subp, ...)
 	    for (i = 0, lp = lines; i < nlines; i++, lp++)
 	      {
 		if (lp->killed)
-		  continue;
+		  {
+		    if (genmetaalgo == 0 || lp->killed != 2)
+		      continue;
+		  }
 		s = lp->l;
 		h = strnhash(s, 10);
 		h = strhash_cont(s + lp->lastoff, h) & hm;
@@ -5438,6 +5459,13 @@ gen_meta(AV *subp, ...)
 		    if (!strncmp(lp->l, lp2->l, 32) && !strcmp(lp->l + lp->lastoff, lp2->l + lp2->lastoff))
 		      break;
 		    h = HASHCHAIN_NEXT(h, hh, hm);
+		  }
+		if (id && genmetaalgo == 1 && lp->killed == 2)
+		  {
+		    /* also kill old line of same level */
+		    struct metaline *lp2 = lines + (id - 1);
+		    if (!lp2->killed && lp2->nslash == lp->nslash)
+		      lp2->killed = 1;
 		  }
 		if (id)
 		  lp->killed = 1;
