@@ -16,6 +16,11 @@
 #define MULTI_SEMANTICS
 
 #include "solvversion.h"
+#if LIBSOLV_VERSION < 623
+#define LIBSOLVEXT_FEATURE_DEBIAN
+#define LIBSOLVEXT_FEATURE_ARCHREPO
+#endif
+
 #include "pool.h"
 #include "repo.h"
 #include "util.h"
