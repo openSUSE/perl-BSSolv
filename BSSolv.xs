@@ -6944,6 +6944,8 @@ expand(BSSolv::expander xp, ...)
 		      options |= EXPANDER_OPTION_DORECOMMENDS;
 		    else if (!strcmp(s, "--dosupplements--"))
 		      options |= EXPANDER_OPTION_DOSUPPLEMENTS | EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES;
+		    else if (!strcmp(s, "--ignoreconflicts--"))
+		      options |= EXPANDER_OPTION_IGNORECONFLICTS;
 		    continue;
 		  }
 		if (*s == '-')
