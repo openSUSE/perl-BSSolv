@@ -1,3 +1,10 @@
+libbssolv-perl (0.4.0-15) unstable; urgency=low
+
+  * implement genmetaalgo 1
+  * support ignoreconflicts expansion flag
+
+ -- Michael Schroeder <mls@suse.de>  Thu, 13 Dec 2018 16:19:27 +0100
+
 libbssolv-perl (0.4.0-14) unstable; urgency=low
 
   * add depsort2 function

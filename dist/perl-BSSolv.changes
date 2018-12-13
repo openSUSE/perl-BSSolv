@@ -1,4 +1,11 @@
 -------------------------------------------------------------------
+Thu Dec 13 16:19:27 CET 2018 - mls@suse.de
+
+- update to version 0.35.0 (perl module 0.15 version)
+  * implement genmetaalgo 1
+  * support ignoreconflicts expansion flag
+
+-------------------------------------------------------------------
 Mon Jan  8 15:13:45 CET 2018 - mls@suse.de
 
 - update to version 0.34.0 (perl module 0.14 version)
