@@ -6594,6 +6594,7 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.xz"))
 #endif
 		   )
+		  continue;
 		if (sl > 10 && !strcmp(s + sl - 10, ".patch.rpm"))
 		  continue;
 		if (sl > 10 && !strcmp(s + sl - 10, ".nosrc.rpm"))
@@ -6607,12 +6608,12 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
 		    const char *str = solvable_lookup_str(pool->solvables + id, buildservice_id);
 		    if (!strcmp(str, sid))
 		      {
-			/* check location */
+			/* check location (unless it's a obsbinlnk where the location comes from the content) */
 			unsigned int medianr;
 			str = solvable_get_location(pool->solvables + id, &medianr);
 			if (str[0] == '.' && str[1] == '/')
 			  str += 2;
-			if (!strcmp(str, s))
+			if (!strcmp(str, s) || (sl >= 10 && !strcmp(s + sl - 10, ".obsbinlnk")))
 		          break;
 		      }
 		    h = HASHCHAIN_NEXT(h, hh, hm);
@@ -6683,6 +6684,11 @@ getpathid(BSSolv::repo repo)
 		unsigned int medianr;
 		const char *str;
 		str = solvable_get_location(s, &medianr);
+		/* We need to special case .obsbinlink here where the location
+		 * points back into the package. We currently assume that
+		 * the name in the full tree is always <name>.obsbinlnk */
+		if (!strncmp(str, "../", 3))
+		  str = pool_tmpjoin(repo->pool, pool_id2str(repo->pool, s->name), ".obsbinlnk", 0);
 		PUSHs(sv_2mortal(newSVpv(str, 0)));
 		str = solvable_lookup_str(s, buildservice_id);
 		PUSHs(sv_2mortal(newSVpv(str, 0)));
