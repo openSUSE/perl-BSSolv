@@ -2642,6 +2642,8 @@ set_disttype_from_location(Pool *pool, Solvable *so)
     set_disttype(pool, disttype);
 }
 
+#define ISNOARCH(arch) (arch == ARCH_NOARCH || arch == ARCH_ALL || arch == ARCH_ANY)
+
 static void
 create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepos)
 {
@@ -2676,23 +2678,11 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
 	      sb = pool->solvables + pb;
 	      if (!unorderedrepos && s->repo != sb->repo)
 		continue;	/* first repo wins */
-	      /* take package if it has a higher arch/version */
-	      if (s->arch != sb->arch)
+
+	      /* take package if it has a higher version/arch */
+	      if (s->evr != sb->evr)
 		{
-		  int r;
-		  if (s->arch == ARCH_NOARCH || s->arch == ARCH_ALL || s->arch == ARCH_ANY)
-		    continue;
-		  if (sb->arch != ARCH_NOARCH && sb->arch != ARCH_ALL && sb->arch != ARCH_ANY)
-		    {
-		      /* the strcmp is kind of silly, but works for most archs */
-		      r = strcmp(pool_id2str(pool, sb->arch), pool_id2str(pool, s->arch));
-		      if (r >= 0)
-			continue;
-		    }
-		}
-	      else if (s->evr != sb->evr)
-		{
-		  /* same repo, check versions */
+		  /* check versions */
 		  int r;
 		  if (olddisttype < 0)
 		    {
@@ -2700,11 +2690,21 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
 		      set_disttype_from_location(pool, s);
 		    }
 		  r = pool_evrcmp(pool, sb->evr, s->evr, EVRCMP_COMPARE);
-		  if (r > 0)
+		  if (r == 0)
+		    r = strcmp(pool_id2str(pool, sb->evr), pool_id2str(pool, s->evr));
+		  if (r >= 0)
 		    continue;
-		  else if (r == 0)
+		}
+	      else if (s->arch != sb->arch)
+		{
+		  /* same versions, check arch */
+		  if (ISNOARCH(sb->arch) && !ISNOARCH(s->arch))
+		    continue;
+		  if (ISNOARCH(sb->arch) || !ISNOARCH(s->arch))
 		    {
-		      r = strcmp(pool_id2str(pool, sb->evr), pool_id2str(pool, s->evr));
+		      int r;
+		      /* the strcmp is kind of silly, but works for most archs */
+		      r = strcmp(pool_id2str(pool, sb->arch), pool_id2str(pool, s->arch));
 		      if (r >= 0)
 			continue;
 		    }
