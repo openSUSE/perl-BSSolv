@@ -134,6 +134,7 @@ static Id buildservice_dodurl;
 static Id expander_directdepsend;
 static Id buildservice_dodcookie;
 static Id buildservice_annotation;
+static Id buildservice_modules;
 
 static int genmetaalgo;
 
@@ -320,7 +321,7 @@ static Offset
 importdeps(HV *hv, const char *key, int keyl, Repo *repo)
 {
   Pool *pool = repo->pool;
-  int i;
+  SSize_t i;
   AV *av = hvlookupav(hv, key, keyl);
   Offset off = 0;
   if (av)
@@ -379,6 +380,7 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
   char *str;
   Id p;
   Solvable *s;
+  AV *av;
 
   str = hvlookupstr(hv, "name", 4);
   if (!str)
@@ -455,6 +457,16 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
   str = hvlookupstr(hv, "annotation", 10);
   if (str && strlen(str) < 100000)
     repodata_set_str(data, p, buildservice_annotation, str);
+  av = hvlookupav(hv, "modules", 7);
+  if (av)
+    {
+      SSize_t i;
+      for (i = 0; i <= av_len(av); i++)
+	{
+	  char *str = avlookupstr(av, i);
+	  repodata_add_idarray(data, p, buildservice_modules, pool_str2id(pool, str, 1));
+	}
+    }
   return p;
 }
 
@@ -2644,6 +2656,46 @@ set_disttype_from_location(Pool *pool, Solvable *so)
 
 #define ISNOARCH(arch) (arch == ARCH_NOARCH || arch == ARCH_ALL || arch == ARCH_ANY)
 
+static int
+has_keyname(Repo *repo, Id keyname)
+{
+  Repodata *data;
+  int rdid;
+  FOR_REPODATAS(repo, rdid, data)
+    if (repodata_has_keyname(data, keyname))
+      return 1;
+  return 0;
+}
+
+static void
+create_module_map(Pool *pool, Map *modulemap)
+{
+  Id *modules = pool->appdata;
+  map_grow(modulemap, pool->ss.nstrings);
+  if (!modules)
+    return;
+  if (!*modules)
+    map_setall(modulemap);
+  for (; *modules; modules++)
+    MAPSET(modulemap, *modules);
+}
+
+static int
+in_module_map(Pool *pool, Map *modulemap, Queue *modules)
+{
+  int i;
+  if (!modulemap->size)
+    create_module_map(pool, modulemap);
+  for (i = 0; i < modules->count; i++)
+    { 
+      Id id = modules->elements[i];
+      if (id > 1 && id < pool->ss.nstrings && MAPTST(modulemap, id))
+	return 1;
+    }
+  return 0;
+}
+
+
 static void
 create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepos)
 {
@@ -2653,20 +2705,34 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
   Repo *repo;
   int olddisttype = -1;
   int dodrepo;
+  int mayhave_modules;
+  Queue modules;
+  Map modulemap;
+  int allmodules;
 
   map_init(considered, pool->nsolvables);
   best = solv_calloc(sizeof(Id), pool->ss.nstrings);
   
+  queue_init(&modules);
+  map_init(&modulemap, 0);
+  allmodules = pool->appdata && !*(Id *)pool->appdata;
   FOR_REPOS(ridx, repo)
     {
       if (repoonly && repo != repoonly)
 	continue;
       dodrepo = repo_lookup_str(repo, SOLVID_META, buildservice_dodurl) != 0;
+      mayhave_modules = dodrepo && has_keyname(repo, buildservice_modules) ? 1 : 0;
       FOR_REPO_SOLVABLES(repo, p, s)
 	{
 	  if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
 	    continue;
 	  pb = best[s->name];
+	  if (mayhave_modules && !allmodules)
+	    {
+	      solvable_lookup_idarray(s, buildservice_modules, &modules);
+	      if (modules.count && !in_module_map(pool, &modulemap, &modules))
+		continue;		/* nope, ignore package */
+	    }
 	  if (unorderedrepos && pb && s->repo->priority != pool->solvables[pb].repo->priority)
 	    {
 	      if (s->repo->priority < pool->solvables[pb].repo->priority)
@@ -2747,6 +2813,8 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
 	}
     }
   solv_free(best);
+  queue_free(&modules);
+  map_free(&modulemap);
   if (olddisttype >= 0 && pool->disttype != olddisttype)
     set_disttype(pool, olddisttype);
 }
@@ -5888,6 +5956,7 @@ new(char *packname = "BSSolv::pool")
 	    expander_directdepsend = pool_str2id(pool, "-directdepsend--", 1);
 	    buildservice_dodcookie = pool_str2id(pool, "buildservice:dodcookie", 1);
 	    buildservice_annotation = pool_str2id(pool, "buildservice:annotation", 1);
+	    buildservice_modules = pool_str2id(pool, "buildservice:modules", 1);
 	    pool_freeidhashes(pool);
 	    RETVAL = pool;
 	}
@@ -6194,6 +6263,14 @@ pkg2checksum(BSSolv::pool pool, int p)
 	RETVAL
 
 int
+pkg2inmodule(BSSolv::pool pool, int p)
+    CODE:
+	RETVAL = solvable_lookup_type(pool->solvables + p, buildservice_modules) != 0;
+    OUTPUT:
+	RETVAL
+
+
+int
 verifypkgchecksum(BSSolv::pool pool, int p, char *path)
     CODE:
 	{
@@ -6281,6 +6358,20 @@ pkg2data(BSSolv::pool pool, int p)
 	    ss = solvable_lookup_str(s, buildservice_annotation);
 	    if (ss)
 	      (void)hv_store(RETVAL, "annotation", 10, newSVpv(ss, 0), 0);
+	    if (solvable_lookup_type(s, buildservice_modules))
+	      {
+		Queue modules;
+		int i;
+		queue_init(&modules);
+		solvable_lookup_idarray(s, buildservice_modules, &modules);
+		if (modules.count)
+		  {
+        	    AV *av = newAV();
+		    for (i = 0; i < modules.count; i++)
+		      av_push(av, newSVpv(pool_id2str(pool, modules.elements[i]), 0));
+		    (void)hv_store(RETVAL, "modules", 7, newRV_noinc((SV*)av), 0);
+		  }
+	      }
 	}
     OUTPUT:
 	RETVAL
@@ -6410,6 +6501,24 @@ preparehashes(BSSolv::pool pool, char *prp, SV *gctxprpnotreadysv = 0)
 	}
 
 void
+setmodules(BSSolv::pool pool, AV *modulesav = 0)
+    CODE:
+	pool->appdata = solv_free(pool->appdata);
+	if (modulesav)
+	  {
+	    SSize_t i, n = av_len(modulesav);
+	    if (n >= 0 && n < 1000000)
+	      {
+		Id *modules = pool->appdata = solv_calloc(n + 2, sizeof(Id));
+		for (i = 0; i <= n; i++)
+		  modules[i] = pool_str2id(pool, avlookupstr(modulesav, i), 1);
+		modules[i] = 0;
+	      }
+	  }
+	else
+	  pool->appdata = solv_calloc(1, sizeof(Id));
+
+void
 DESTROY(BSSolv::pool pool)
     CODE:
         if (pool->considered)
@@ -6417,6 +6526,7 @@ DESTROY(BSSolv::pool pool)
 	    map_free(pool->considered);
 	    pool->considered = solv_free(pool->considered);
 	  }
+	pool->appdata = solv_free(pool->appdata);
 	pool_free(pool);
 
 
@@ -6432,6 +6542,10 @@ pkgnames(BSSolv::repo repo)
 	    Id p;
 	    Solvable *s;
 	    Map c;
+	    int do_modules = 0;
+
+	    if (pool->appdata && !*(Id *)pool->appdata)
+	      do_modules = has_keyname(repo, buildservice_modules) ? 1 : 0;
 	
 	    create_considered(pool, repo, &c, 0);
 	    EXTEND(SP, 2 * repo->nsolvables);
@@ -6439,6 +6553,15 @@ pkgnames(BSSolv::repo repo)
 	      {
 		if (!MAPTST(&c, p))
 		  continue;
+		if (do_modules && solvable_lookup_type(s, buildservice_modules))
+		  {
+		    /* special module mode: use NEVR instead of just the name */
+		    char *nevr = pool_tmpjoin(pool, pool_id2str(pool, s->name), "-", pool_id2str(pool, s->evr));
+		    PUSHs(sv_2mortal(newSVpv(nevr, 0)));
+		    pool_freetmpspace(pool, nevr);
+		    PUSHs(sv_2mortal(newSViv(p)));
+		    continue;
+		  }
 		PUSHs(sv_2mortal(newSVpv(pool_id2str(pool, s->name), 0)));
 		PUSHs(sv_2mortal(newSViv(p)));
 	      }
