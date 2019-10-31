@@ -2721,32 +2721,42 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
       if (repoonly && repo != repoonly)
 	continue;
       dodrepo = repo_lookup_str(repo, SOLVID_META, buildservice_dodurl) != 0;
-      mayhave_modules = dodrepo && has_keyname(repo, buildservice_modules) ? 1 : 0;
+      mayhave_modules = has_keyname(repo, buildservice_modules) ? 1 : 0;
       FOR_REPO_SOLVABLES(repo, p, s)
 	{
+	  int inmodule = 0;
 	  if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
 	    continue;
 	  pb = best[s->name];
+	  sb = pb ? pool->solvables + pb : 0;
 	  if (mayhave_modules && !allmodules)
 	    {
 	      solvable_lookup_idarray(s, buildservice_modules, &modules);
-	      if (modules.count && !in_module_map(pool, &modulemap, &modules))
+	      inmodule = modules.count ? 1 : 0;
+	      if (inmodule && !in_module_map(pool, &modulemap, &modules))
 		continue;		/* nope, ignore package */
 	    }
-	  if (unorderedrepos && pb && s->repo->priority != pool->solvables[pb].repo->priority)
+	  if (unorderedrepos && sb && s->repo->priority != sb->repo->priority)
 	    {
-	      if (s->repo->priority < pool->solvables[pb].repo->priority)
+	      if (s->repo->priority < sb->repo->priority)
 		continue;	/* lower prio, ignore */
 	    }
-	  else if (pb)
+	  else if (sb)
 	    {
+	      int sbinmodule = 0;
 	      /* we already have that name. decide which one to take */
-	      sb = pool->solvables + pb;
 	      if (!unorderedrepos && s->repo != sb->repo)
 		continue;	/* first repo wins */
 
-	      /* take package if it has a higher version/arch */
-	      if (s->evr != sb->evr)
+	      if (s->repo == sb->repo && mayhave_modules)
+		sbinmodule = solvable_lookup_type(sb, buildservice_modules) ? 1 : 0;
+
+	      if (inmodule != sbinmodule)
+		{
+		  if (inmodule < sbinmodule)
+		    continue;
+		}
+	      else if (s->evr != sb->evr)
 		{
 		  /* check versions */
 		  int r;
