@@ -6269,6 +6269,18 @@ pkg2inmodule(BSSolv::pool pool, int p)
     OUTPUT:
 	RETVAL
 
+void
+pkg2modules(BSSolv::pool pool, int p)
+    PPCODE:
+	{
+	  Queue modules;
+	  int i;
+	  queue_init(&modules);
+	  solvable_lookup_idarray(pool->solvables + p, buildservice_modules, &modules);
+	  for (i = 0; i < modules.count; i++)
+	    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, modules.elements[i]), 0)));
+	  queue_free(&modules);
+	}
 
 int
 verifypkgchecksum(BSSolv::pool pool, int p, char *path)
@@ -6517,6 +6529,19 @@ setmodules(BSSolv::pool pool, AV *modulesav = 0)
 	  }
 	else
 	  pool->appdata = solv_calloc(1, sizeof(Id));
+
+void
+getmodules(BSSolv::pool pool)
+    PPCODE:
+	if (pool->appdata)
+	  {
+	    Id *modules = pool->appdata;
+	    int i;
+	    for (i = 0; modules[i]; i++)
+	      XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, modules[i]), 0)));
+	    if (i == 0)
+	      XPUSHs(&PL_sv_undef);
+	  }
 
 void
 DESTROY(BSSolv::pool pool)
@@ -6874,6 +6899,12 @@ setpriority(BSSolv::repo repo, int priority)
     PPCODE:
 	repo->priority = priority;
 
+int
+mayhavemodules(BSSolv::repo repo)
+    CODE:
+	RETVAL = has_keyname(repo, buildservice_modules);
+    OUTPUT:
+	RETVAL
 
 MODULE = BSSolv		PACKAGE = BSSolv::expander	PREFIX = expander
 
