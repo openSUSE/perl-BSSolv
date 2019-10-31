@@ -2708,14 +2708,12 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
   int mayhave_modules;
   Queue modules;
   Map modulemap;
-  int allmodules;
 
   map_init(considered, pool->nsolvables);
   best = solv_calloc(sizeof(Id), pool->ss.nstrings);
   
   queue_init(&modules);
   map_init(&modulemap, 0);
-  allmodules = pool->appdata && !*(Id *)pool->appdata;
   FOR_REPOS(ridx, repo)
     {
       if (repoonly && repo != repoonly)
@@ -2729,7 +2727,7 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
 	    continue;
 	  pb = best[s->name];
 	  sb = pb ? pool->solvables + pb : 0;
-	  if (mayhave_modules && !allmodules)
+	  if (mayhave_modules)
 	    {
 	      solvable_lookup_idarray(s, buildservice_modules, &modules);
 	      inmodule = modules.count ? 1 : 0;
@@ -6523,22 +6521,19 @@ preparehashes(BSSolv::pool pool, char *prp, SV *gctxprpnotreadysv = 0)
 	}
 
 void
-setmodules(BSSolv::pool pool, AV *modulesav = 0)
+setmodules(BSSolv::pool pool, AV *modulesav)
     CODE:
-	pool->appdata = solv_free(pool->appdata);
-	if (modulesav)
-	  {
-	    SSize_t i, n = av_len(modulesav);
-	    if (n >= 0 && n < 1000000)
-	      {
-		Id *modules = pool->appdata = solv_calloc(n + 2, sizeof(Id));
-		for (i = 0; i <= n; i++)
-		  modules[i] = pool_str2id(pool, avlookupstr(modulesav, i), 1);
-		modules[i] = 0;
-	      }
-	  }
-	else
-	  pool->appdata = solv_calloc(1, sizeof(Id));
+	{
+	  SSize_t i, n = av_len(modulesav);
+	  pool->appdata = solv_free(pool->appdata);
+	  if (n >= 0 && n < 1000000)
+	    {
+	      Id *modules = pool->appdata = solv_calloc(n + 2, sizeof(Id));
+	      for (i = 0; i <= n; i++)
+		modules[i] = pool_str2id(pool, avlookupstr(modulesav, i), 1);
+	      modules[i] = 0;
+	    }
+	}
 
 void
 getmodules(BSSolv::pool pool)
@@ -6549,8 +6544,6 @@ getmodules(BSSolv::pool pool)
 	    int i;
 	    for (i = 0; modules[i]; i++)
 	      XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, modules[i]), 0)));
-	    if (i == 0)
-	      XPUSHs(&PL_sv_undef);
 	  }
 
 void
@@ -6577,26 +6570,13 @@ pkgnames(BSSolv::repo repo)
 	    Id p;
 	    Solvable *s;
 	    Map c;
-	    int do_modules = 0;
 
-	    if (pool->appdata && !*(Id *)pool->appdata)
-	      do_modules = has_keyname(repo, buildservice_modules) ? 1 : 0;
-	
 	    create_considered(pool, repo, &c, 0);
 	    EXTEND(SP, 2 * repo->nsolvables);
 	    FOR_REPO_SOLVABLES(repo, p, s)
 	      {
 		if (!MAPTST(&c, p))
 		  continue;
-		if (do_modules && solvable_lookup_type(s, buildservice_modules))
-		  {
-		    /* special module mode: use NEVR instead of just the name */
-		    char *nevr = pool_tmpjoin(pool, pool_id2str(pool, s->name), "-", pool_id2str(pool, s->evr));
-		    PUSHs(sv_2mortal(newSVpv(nevr, 0)));
-		    pool_freetmpspace(pool, nevr);
-		    PUSHs(sv_2mortal(newSViv(p)));
-		    continue;
-		  }
 		PUSHs(sv_2mortal(newSVpv(pool_id2str(pool, s->name), 0)));
 		PUSHs(sv_2mortal(newSViv(p)));
 	      }
