@@ -5034,6 +5034,12 @@ printobscpioinstr(FILE *fp, int fdstore, int withmeta)
   printf("stats file_size %lld\n", (unsigned long long)ftell(fp));
 }
 
+static int
+repo_getmodules_cmp(const void *ap, const void *bp, void *dp)
+{
+  return *(Id *)ap - *(Id *)bp;
+}
+
 MODULE = BSSolv		PACKAGE = BSSolv
 
 void
@@ -6895,6 +6901,46 @@ mayhavemodules(BSSolv::repo repo)
 	RETVAL = has_keyname(repo, buildservice_modules);
     OUTPUT:
 	RETVAL
+
+void
+getmodules(BSSolv::repo repo)
+    PPCODE:
+	if (has_keyname(repo, buildservice_modules))
+	  {
+	    Pool *pool = repo->pool;
+	    Id p, lastid = -1;
+	    Solvable *s;
+	    Queue modules;
+	    Queue collectedmodules;
+	    int i;
+
+	    queue_init(&collectedmodules);
+	    queue_init(&modules);
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      {
+	        solvable_lookup_idarray(pool->solvables + p, buildservice_modules, &modules);
+		for (i = 0; i < modules.count; i++)
+		  {
+		    if (modules.elements[i] == lastid)
+		      continue;
+		    lastid = modules.elements[i];
+		    queue_push(&collectedmodules, modules.elements[i]);
+		  }
+	      }
+	    queue_free(&modules);
+	    /* sort and unify */
+	    solv_sort(collectedmodules.elements, collectedmodules.count, sizeof(Id), repo_getmodules_cmp, 0);
+	    lastid = -1;
+	    for (i = 0; i < collectedmodules.count; i++)
+	      {
+		if (collectedmodules.elements[i] == lastid)
+		  continue;
+		lastid = collectedmodules.elements[i];
+	        XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, lastid), 0)));
+	      }
+	    queue_free(&collectedmodules);
+	  }
+
 
 MODULE = BSSolv		PACKAGE = BSSolv::expander	PREFIX = expander
 
