@@ -5054,7 +5054,7 @@ find_corresponding_dod(Solvable *s)
   Id p2;
   Solvable *s2;
 
-  if (repo)
+  if (!repo)
     return 0;
   FOR_REPO_SOLVABLES(repo, p2, s2)
     {
