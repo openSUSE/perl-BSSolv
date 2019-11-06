@@ -5035,7 +5035,7 @@ printobscpioinstr(FILE *fp, int fdstore, int withmeta)
 }
 
 static int
-repo_getmodules_cmp(const void *ap, const void *bp, void *dp)
+unifymodules_cmp(const void *ap, const void *bp, void *dp)
 {
   return *(Id *)ap - *(Id *)bp;
 }
@@ -6758,7 +6758,7 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
 		      continue;
 		    h = strhash(str) & hm;
 		    hh = HASHCHAIN_START;
-		    while ((id = ht[h]) != 0)
+		    while (ht[h])
 		      h = HASHCHAIN_NEXT(h, hh, hm);
 		    ht[h] = p;
 		  }
@@ -6857,6 +6857,83 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
     OUTPUT:
 	RETVAL
 
+void
+modulesfrombins(BSSolv::repo repo, ...)
+    PPCODE:
+	{
+	    Pool *pool = repo->pool;
+	    Hashtable ht;
+	    Hashval h, hh, hm;
+	    Queue modules;
+	    Queue collectedmodules;
+            Id p, lastid;
+	    Solvable *s;
+	    int i;
+
+	    queue_init(&collectedmodules);
+	    queue_init(&modules);
+	    hm = mkmask(2 * repo->nsolvables + 1);
+	    ht = solv_calloc(hm + 1, sizeof(*ht));
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      {
+	        const char *bsid = solvable_lookup_str(s, buildservice_id);
+		if (!bsid)
+		  continue;
+		if (!strcmp(bsid, "dod"))
+		  h = s->name + s->evr * 37 + s->arch * 129;
+		else
+		  h = strhash(bsid);
+		h &= hm;
+		hh = HASHCHAIN_START;
+		while (ht[h])
+		  h = HASHCHAIN_NEXT(h, hh, hm);
+		ht[h] = p;
+	      }
+
+	    for (i = 1; i + 1 < items; i += 2)
+	      {
+		const char *bsid = SvPV_nolen(ST(i + 1));
+		h = strhash(bsid) & hm;
+		hh = HASHCHAIN_START;
+		while ((p = ht[h]) != 0)
+		  {
+		    const char *bsid2 = solvable_lookup_str(pool->solvables + p, buildservice_id);
+		    if (!strcmp(bsid, bsid2))
+		      break;
+		  }
+		if (!p)
+		  continue;
+		s = pool->solvables + p;
+	        h = (s->name + s->evr * 37 + s->arch * 129) & hm;
+		hh = HASHCHAIN_START;
+		while ((p = ht[h]) != 0)
+		  {
+		    Solvable *s2 = pool->solvables + p;
+		    if (s->name == s2->name && s->evr == s2->evr && s->arch == s2->arch)
+		      {
+			lastid = collectedmodules.count ? collectedmodules.elements[collectedmodules.count - 1] : 0;
+			solvable_lookup_idarray(s2, buildservice_modules, &modules);
+			for (i = 0; i < modules.count; i++)
+			  if (modules.elements[i] != lastid)
+			    queue_push(&collectedmodules, modules.elements[i]);
+		      }
+		    h = HASHCHAIN_NEXT(h, hh, hm);
+		  }
+	      }
+	    solv_free(ht);
+	    queue_free(&modules);
+	    /* sort and unify */
+	    solv_sort(collectedmodules.elements, collectedmodules.count, sizeof(Id), unifymodules_cmp, 0);
+	    lastid = -1;
+	    for (i = 0; i < collectedmodules.count; i++)
+	      {
+		if (collectedmodules.elements[i] == lastid)
+		  continue;
+		lastid = collectedmodules.elements[i];
+	        XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, lastid), 0)));
+	      }
+	    queue_free(&collectedmodules);
+	}
 
 void
 getpathid(BSSolv::repo repo)
@@ -6971,7 +7048,7 @@ getmodules(BSSolv::repo repo)
 	      }
 	    queue_free(&modules);
 	    /* sort and unify */
-	    solv_sort(collectedmodules.elements, collectedmodules.count, sizeof(Id), repo_getmodules_cmp, 0);
+	    solv_sort(collectedmodules.elements, collectedmodules.count, sizeof(Id), unifymodules_cmp, 0);
 	    lastid = -1;
 	    for (i = 0; i < collectedmodules.count; i++)
 	      {
