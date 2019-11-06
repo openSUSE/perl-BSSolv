@@ -6600,6 +6600,17 @@ DESTROY(BSSolv::pool pool)
 MODULE = BSSolv		PACKAGE = BSSolv::repo		PREFIX = repo
 
 void
+allpackages(BSSolv::repo repo)
+    PPCODE:
+	{
+	    Id p;
+	    Solvable *s;
+	    EXTEND(SP, repo->nsolvables);
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      PUSHs(sv_2mortal(newSViv(p)));
+	}
+
+void
 pkgnames(BSSolv::repo repo)
     PPCODE:
 	{
