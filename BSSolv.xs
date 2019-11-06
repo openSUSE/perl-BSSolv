@@ -6900,6 +6900,7 @@ modulesfrombins(BSSolv::repo repo, ...)
 		    const char *bsid2 = solvable_lookup_str(pool->solvables + p, buildservice_id);
 		    if (!strcmp(bsid, bsid2))
 		      break;
+		    h = HASHCHAIN_NEXT(h, hh, hm);
 		  }
 		if (!p)
 		  continue;
