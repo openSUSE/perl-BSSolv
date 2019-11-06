@@ -5040,6 +5040,30 @@ repo_getmodules_cmp(const void *ap, const void *bp, void *dp)
   return *(Id *)ap - *(Id *)bp;
 }
 
+static int
+is_dod_package(Solvable *s)
+{
+  const char *str = solvable_lookup_str(s, buildservice_id);
+  return str && !strcmp(str, "dod") ? 1 : 0;
+}
+
+static Solvable *
+find_corresponding_dod(Solvable *s)
+{
+  Repo *repo = s->repo;
+  Id p2;
+  Solvable *s2;
+
+  if (repo)
+    return 0;
+  FOR_REPO_SOLVABLES(repo, p2, s2)
+    {
+      if (s->name == s2->name && s->evr == s2->evr && s->arch == s2->arch && s != s2 && is_dod_package(s2))
+	return s2;
+    }
+  return 0;
+}
+
 MODULE = BSSolv		PACKAGE = BSSolv
 
 void
@@ -6287,10 +6311,17 @@ void
 pkg2modules(BSSolv::pool pool, int p)
     PPCODE:
 	{
+	  Solvable *s = pool->solvables + p;
 	  Queue modules;
 	  int i;
 	  queue_init(&modules);
-	  solvable_lookup_idarray(pool->solvables + p, buildservice_modules, &modules);
+	  solvable_lookup_idarray(s, buildservice_modules, &modules);
+	  if (!modules.count && !is_dod_package(s))
+	    {
+	      Solvable *s2 = find_corresponding_dod(s);
+	      if (s2)
+		solvable_lookup_idarray(s2, buildservice_modules, &modules);
+	    }
 	  for (i = 0; i < modules.count; i++)
 	    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, modules.elements[i]), 0)));
 	  queue_free(&modules);
