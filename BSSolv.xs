@@ -6879,6 +6879,7 @@ modulesfrombins(BSSolv::repo repo, ...)
 	        const char *bsid = solvable_lookup_str(s, buildservice_id);
 		if (!bsid)
 		  continue;
+		printf("%s: %s\n", bsid, pool_solvid2str(pool, p));
 		if (!strcmp(bsid, "dod"))
 		  h = s->name + s->evr * 37 + s->arch * 129;
 		else
@@ -6893,27 +6894,32 @@ modulesfrombins(BSSolv::repo repo, ...)
 	    for (i = 1; i + 1 < items; i += 2)
 	      {
 		const char *bsid = SvPV_nolen(ST(i + 1));
+		printf("bin %s\n", bsid);
 		h = strhash(bsid) & hm;
 		hh = HASHCHAIN_START;
 		while ((p = ht[h]) != 0)
 		  {
 		    const char *bsid2 = solvable_lookup_str(pool->solvables + p, buildservice_id);
+		    printf("hashcheck %d\n", p);
 		    if (!strcmp(bsid, bsid2))
 		      break;
 		    h = HASHCHAIN_NEXT(h, hh, hm);
 		  }
 		if (!p)
 		  continue;
+		printf("found %d\n", p);
 		s = pool->solvables + p;
 	        h = (s->name + s->evr * 37 + s->arch * 129) & hm;
 		hh = HASHCHAIN_START;
 		while ((p = ht[h]) != 0)
 		  {
 		    Solvable *s2 = pool->solvables + p;
+		    printf("hashcheck %d\n", p);
 		    if (s->name == s2->name && s->evr == s2->evr && s->arch == s2->arch)
 		      {
 			lastid = collectedmodules.count ? collectedmodules.elements[collectedmodules.count - 1] : 0;
 			solvable_lookup_idarray(s2, buildservice_modules, &modules);
+			printf("found %d, module cnt %d\n", p, modules.count);
 			for (i = 0; i < modules.count; i++)
 			  if (modules.elements[i] != lastid)
 			    queue_push(&collectedmodules, modules.elements[i]);
