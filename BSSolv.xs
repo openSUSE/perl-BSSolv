@@ -6868,7 +6868,7 @@ modulesfrombins(BSSolv::repo repo, ...)
 	    Queue collectedmodules;
             Id p, lastid;
 	    Solvable *s;
-	    int i;
+	    int i, j;
 
 	    queue_init(&collectedmodules);
 	    queue_init(&modules);
@@ -6920,9 +6920,9 @@ modulesfrombins(BSSolv::repo repo, ...)
 			lastid = collectedmodules.count ? collectedmodules.elements[collectedmodules.count - 1] : 0;
 			solvable_lookup_idarray(s2, buildservice_modules, &modules);
 			printf("found %d, module cnt %d\n", p, modules.count);
-			for (i = 0; i < modules.count; i++)
-			  if (modules.elements[i] != lastid)
-			    queue_push(&collectedmodules, modules.elements[i]);
+			for (j = 0; j < modules.count; j++)
+			  if (modules.elements[j] != lastid)
+			    queue_push(&collectedmodules, modules.elements[j]);
 		      }
 		    h = HASHCHAIN_NEXT(h, hh, hm);
 		  }
