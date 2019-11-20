@@ -964,6 +964,7 @@ normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
 #define ERROR_CONFLICT			7
 #define ERROR_CONFLICT2			8
 #define ERROR_ALLCONFLICT		9
+#define ERROR_NOPROVIDERINFO		10
 
 static void
 expander_dbg(Expander *xp, const char *format, ...)
@@ -1887,6 +1888,27 @@ str2id_dup(Pool *pool, const char *str)
   }
 }
 
+static void
+add_noproviderinfo(Pool *pool, Id dep, Queue *errq)
+{
+  Reldep *rd;
+  if (!ISRELDEP(dep))
+    return;
+  rd = GETRELDEP(pool, dep);
+  if (rd->flags < 8 && !ISRELDEP(rd->name) && !ISRELDEP(rd->evr))
+    {
+      Id p, pp;
+      FOR_PROVIDES(p, pp, rd->name)
+        {
+	  if (pool->solvables[p].name != rd->name)
+	    continue;
+	  queue_push(errq, ERROR_NOPROVIDERINFO);
+	  queue_push2(errq, p, 0);
+	  return;
+	}
+    }
+}
+
 static int
 expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignoreq, int options)
 {
@@ -2175,6 +2197,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 		continue;
 	      queue_push(&xpctx.errors, ERROR_NOPROVIDER);
 	      queue_push2(&xpctx.errors, id, who);
+	      add_noproviderinfo(pool, id, &xpctx.errors);
 	      continue;
 	    }
 
@@ -2652,6 +2675,12 @@ set_disttype_from_location(Pool *pool, Solvable *so)
 #endif
   if (disttype >= 0 && pool->disttype != disttype)
     set_disttype(pool, disttype);
+}
+
+static inline const char *
+solvid2name(Pool *pool, Id p)
+{
+  return pool_id2str(pool, pool->solvables[p].name);
 }
 
 #define ISNOARCH(arch) (arch == ARCH_NOARCH || arch == ARCH_ALL || arch == ARCH_ANY)
@@ -7309,7 +7338,7 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("nothing provides %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("nothing provides %s needed by %s", pool_dep2str(pool, id), solvid2name(pool, who));
 			else
 		          sv = newSVpvf("nothing provides %s", pool_dep2str(pool, id));
 			i += 3;
@@ -7319,7 +7348,7 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("%s conflicts with always true %s", pool_id2str(pool, pool->solvables[who].name), pool_dep2str(pool, id));
+		          sv = newSVpvf("%s conflicts with always true %s", solvid2name(pool, who), pool_dep2str(pool, id));
 			else
 		          sv = newSVpvf("conflict with always true %s", pool_dep2str(pool, id));
 			i += 3;
@@ -7329,11 +7358,11 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (!who && who2 >= 0)
-		          sv = newSVpvf("conflicts with %s", pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("conflicts with %s", solvid2name(pool, who2));
 			else if (who2 < 0)
-		          sv = newSVpvf("%s obsoletes %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("%s obsoletes %s", solvid2name(pool, who), solvid2name(pool, -who2));
 			else
-		          sv = newSVpvf("%s conflicts with %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("%s conflicts with %s", solvid2name(pool, who), solvid2name(pool, who2));
 			i += 3;
 		      }
 		    else if (type == ERROR_CONFLICT2)
@@ -7341,11 +7370,11 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (who2 < 0)
-		          sv = newSVpvf("%s is obsoleted by %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("%s is obsoleted by %s", solvid2name(pool, who), solvid2name(pool, -who2));
 			else if (who2 > 0)
-		          sv = newSVpvf("%s is in conflict with %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("%s is in conflict with %s", solvid2name(pool, who), solvid2name(pool, who2));
 			else
-		          sv = newSVpvf("%s is in conflict", pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("%s is in conflict", solvid2name(pool, who));
 			i += 3;
 		      }
 		    else if (type == ERROR_CONFLICTINGPROVIDERS)
@@ -7353,7 +7382,7 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-			  sv = newSVpvf("conflict for providers of %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+			  sv = newSVpvf("conflict for providers of %s needed by %s", pool_dep2str(pool, id), solvid2name(pool, who));
 			else
 			  sv = newSVpvf("conflict for providers of %s", pool_dep2str(pool, id));
 			i += 3;
@@ -7363,9 +7392,9 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (who2 < 0)
-		          sv = newSVpvf("(provider %s obsoletes %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("(provider %s obsoletes %s)", solvid2name(pool, who), solvid2name(pool, -who2));
 			else
-		          sv = newSVpvf("(provider %s conflicts with %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("(provider %s conflicts with %s)", solvid2name(pool, who), solvid2name(pool, who2));
 			i += 3;
 		      }
 		    else if (type == ERROR_PROVIDERINFO2)
@@ -7373,11 +7402,11 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (who2 < 0)
-		          sv = newSVpvf("(provider %s is obsoleted by %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("(provider %s is obsoleted by %s)", solvid2name(pool, who), solvid2name(pool, -who2));
 			else if (who2 > 0)
-		          sv = newSVpvf("(provider %s is in conflict with %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("(provider %s is in conflict with %s)", solvid2name(pool, who), solvid2name(pool, who2));
 			else
-		          sv = newSVpvf("(provider %s is in conflict)", pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("(provider %s is in conflict)", solvid2name(pool, who));
 			i += 3;
 		      }
 		    else if (type == ERROR_CHOICE)
@@ -7397,7 +7426,7 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("have choice for %s needed by %s: %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name), str);
+		          sv = newSVpvf("have choice for %s needed by %s: %s", pool_dep2str(pool, id), solvid2name(pool, who), str);
 			else
 		          sv = newSVpvf("have choice for %s: %s", pool_dep2str(pool, id), str);
 			i = j + 1;
@@ -7407,9 +7436,15 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("cannot parse dependency %s from %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("cannot parse dependency %s from %s", pool_dep2str(pool, id), solvid2name(pool, who));
 			else
 		          sv = newSVpvf("cannot parse dependency %s", pool_dep2str(pool, id));
+			i += 3;
+		      }
+		    else if (type == ERROR_NOPROVIDERINFO)
+		      {
+			who = out.elements[i + 1];
+		        sv = newSVpvf("(got version %s)", pool_id2str(pool, pool->solvables[who].evr));
 			i += 3;
 		      }
 		    else
