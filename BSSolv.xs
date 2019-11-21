@@ -1020,6 +1020,19 @@ expander_solvid2name(Expander *xp, Id p)
   return pool_tmpjoin(xp->pool, n, "@", r->name);
 }
 
+static const char *
+expander_solvid2str(Expander *xp, Id p)
+{
+  const char *n = pool_solvid2str(xp->pool, p);
+  Repo *r; 
+  if (!xp->debug)
+    return n;
+  r = xp->pool->solvables[p].repo;
+  if (!r) 
+    return n;
+  return pool_tmpjoin(xp->pool, n, "@", r->name);
+}
+
 static int
 pkgname_sort_cmp(const void *ap, const void *bp, void *dp)
 {
@@ -1889,22 +1902,49 @@ str2id_dup(Pool *pool, const char *str)
 }
 
 static void
-add_noproviderinfo(Pool *pool, Id dep, Queue *errq)
+add_noproviderinfo(ExpanderCtx *xpctx, Id dep, Id who)
 {
-  Reldep *rd;
+  Pool *pool = xpctx->pool;
+  Reldep *rd, *prd;
+  Id p, pp, prov, *provp;
+
+  if (xpctx->xp->debug)
+    {
+      if (who)
+        expander_dbg(xpctx->xp, "nothing provides %s needed by %s\n", pool_dep2str(pool, dep), expander_solvid2str(xpctx->xp, who));
+      else
+        expander_dbg(xpctx->xp, "nothing provides %s\n", pool_dep2str(pool, dep));
+    }
   if (!ISRELDEP(dep))
     return;
   rd = GETRELDEP(pool, dep);
-  if (rd->flags < 8 && !ISRELDEP(rd->name) && !ISRELDEP(rd->evr))
+  if (rd->flags >= 8 || ISRELDEP(rd->name) || ISRELDEP(rd->evr))
+    return;
+  FOR_PROVIDES(p, pp, rd->name)
     {
-      Id p, pp;
-      FOR_PROVIDES(p, pp, rd->name)
-        {
-	  if (pool->solvables[p].name != rd->name)
+      Solvable *s = pool->solvables + p;
+      if (!s->repo || !s->provides)
+	continue;
+      for (provp = s->repo->idarraydata + s->provides; (prov = *provp++) != 0; )
+	{
+	  if (!ISRELDEP(prov))
 	    continue;
-	  queue_push(errq, ERROR_NOPROVIDERINFO);
-	  queue_push2(errq, p, 0);
-	  return;
+	  prd = GETRELDEP(pool, prov);
+	  if (prd->name != rd->name || ISRELDEP(prd->evr))
+	    continue;
+	  queue_push(&xpctx->errors, ERROR_NOPROVIDERINFO);
+	  if (prd->name == s->name && prd->evr == s->evr)
+	    {
+	      if (xpctx->xp->debug)
+		expander_dbg(xpctx->xp, "%s has version %s\n", expander_solvid2str(xpctx->xp, p), pool_id2str(pool, prd->evr));
+	      queue_push2(&xpctx->errors, prd->evr, 0);
+	    }
+	  else
+	    {
+	      if (xpctx->xp->debug)
+		expander_dbg(xpctx->xp, "%s provides version %s\n", expander_solvid2str(xpctx->xp, p), pool_id2str(pool, prd->evr));
+	      queue_push2(&xpctx->errors, prd->evr, p);
+	    }
 	}
     }
 }
@@ -2197,7 +2237,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 		continue;
 	      queue_push(&xpctx.errors, ERROR_NOPROVIDER);
 	      queue_push2(&xpctx.errors, id, who);
-	      add_noproviderinfo(pool, id, &xpctx.errors);
+	      add_noproviderinfo(&xpctx, id, who);
 	      continue;
 	    }
 
@@ -7443,8 +7483,12 @@ expand(BSSolv::expander xp, ...)
 		      }
 		    else if (type == ERROR_NOPROVIDERINFO)
 		      {
-			who = out.elements[i + 1];
-		        sv = newSVpvf("(got version %s)", pool_id2str(pool, pool->solvables[who].evr));
+			id = out.elements[i + 1];
+			who = out.elements[i + 2];
+			if (who)
+		          sv = newSVpvf("(got version %s provided by %s)", pool_id2str(pool, id), solvid2name(pool, who));
+			else
+		          sv = newSVpvf("(got version %s)", pool_id2str(pool, id));
 			i += 3;
 		      }
 		    else
