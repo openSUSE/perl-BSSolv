@@ -1,7 +1,7 @@
 #
 # spec file for package perl-BSSolv
 #
-# Copyright (c) 2018 SUSE LINUX GmbH, Nuernberg, Germany.
+# Copyright (c) 2020 SUSE LINUX GmbH, Nuernberg, Germany.
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -12,7 +12,7 @@
 # license that conforms to the Open Source Definition (Version 1.9)
 # published by the Open Source Initiative.
 
-# Please submit bugfixes or comments via http://bugs.opensuse.org/
+# Please submit bugfixes or comments via https://bugs.opensuse.org/
 #
 
 
@@ -37,7 +37,8 @@ BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  perl
 BuildRequires:  xz-devel
-BuildRequires:  zlib-devel
+BuildRequires:  libzlib-devel
+BuildRequires:  libzstd-devel
 #RHEL6 moved ExtUtils::MakeMaker outside the main perl package
 BuildRequires:  perl(ExtUtils::MakeMaker)
 # the testsuite uses the check framework
@@ -78,6 +79,7 @@ cmake   $CMAKE_FLAGS \
 	-DENABLE_DEBIAN=1 \
 	-DENABLE_ARCHREPO=1 \
 	-DENABLE_LZMA_COMPRESSION=1 \
+	-DENABLE_ZSTD_COMPRESSION=1 \
 	-DENABLE_COMPLEX_DEPS=1 \
 	-DMULTI_SEMANTICS=1
 pushd src ; make ; popd

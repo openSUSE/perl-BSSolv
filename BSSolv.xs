@@ -2710,7 +2710,7 @@ set_disttype_from_location(Pool *pool, Solvable *so)
     disttype = DISTTYPE_DEB;
 #endif
 #ifdef DISTTYPE_ARCH
-  if (disttype < 0 && sl >= 11 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz")))
+  if (disttype < 0 && sl >= 12 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz") || !strcmp(s + sl - 12, ".pkg.tar.zst")))
     disttype = DISTTYPE_ARCH;
 #endif
   if (disttype >= 0 && pool->disttype != disttype)
@@ -3033,7 +3033,7 @@ repodata_addbin(Repodata *data, char *prefix, char *s, int sl, char *sid)
       return p;
     }
 #if defined(LIBSOLVEXT_FEATURE_ARCHREPO) && defined(ARCH_ADD_WITH_PKGID)
-  else if (sl >= 11 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz")))
+  else if (sl >= 12 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz") || !strcmp(s + sl - 12, ".pkg.tar.zst")))
     p = repo_add_arch_pkg(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|ARCH_ADD_WITH_PKGID);
 #endif
   solv_free(path);
@@ -6144,6 +6144,7 @@ repofrombins(BSSolv::pool pool, char *name, char *dir, ...)
 #ifdef ARCH_ADD_WITH_PKGID
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.gz"))
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.xz"))
+                    && (sl < 12 || strcmp(s + sl - 12, ".pkg.tar.zst"))
 #endif
 		   )
 		  continue;
@@ -6847,6 +6848,7 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
 #ifdef ARCH_ADD_WITH_PKGID
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.gz"))
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.xz"))
+                    && (sl < 12 || strcmp(s + sl - 12, ".pkg.tar.zst"))
 #endif
 		   )
 		  continue;
