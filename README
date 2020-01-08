@@ -20,7 +20,14 @@ The Makefile.PL options are:
 
 DEPENDENCIES
 
-        The libsolv library
+        The libsolv library. For a bundled build, please first check
+        out a copy of its git repository into a `libsolv` subdirectory
+        and follow its INSTALL instructions to make and populate its
+        further `build` subdirectory, e.g.:
+        
+        git clone https://github.com/openSUSE/libsolv
+        ( cd libsolv && mkdir build && cd build && cmake .. && make )
+        perl Makefile.PL --bundled-libsolv && make
 
 
 COPYRIGHT AND LICENSE
