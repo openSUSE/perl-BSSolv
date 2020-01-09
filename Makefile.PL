@@ -8,7 +8,7 @@ my $lib;
 if (grep {$_ eq '--bundled-libsolv'} @ARGV) {
   my $builddir = 'libsolv';
   $inc = "-I$builddir/src -I$builddir/ext";
-  $lib = "-L$builddir/src -L$builddir/ext -lsolvext -lsolv -lz -llzma";
+  $lib = "-L$builddir/src -L$builddir/ext -lsolvext -lsolv -lz -llzma -lzstd";
 } else {
   $lib = '-lsolvext -lsolv';
 }
