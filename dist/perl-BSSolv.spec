@@ -17,7 +17,7 @@
 
 
 Name:           perl-BSSolv
-Version:        0.35.0
+Version:        0.36.0
 Release:        0
 Url:            https://github.com/openSUSE/perl-BSSolv
 Source:         libsolv-0.7.2.tar.gz
@@ -37,7 +37,7 @@ BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  perl
 BuildRequires:  xz-devel
-BuildRequires:  libzlib-devel
+BuildRequires:  zlib-devel
 BuildRequires:  libzstd-devel
 #RHEL6 moved ExtUtils::MakeMaker outside the main perl package
 BuildRequires:  perl(ExtUtils::MakeMaker)
