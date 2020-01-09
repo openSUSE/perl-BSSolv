@@ -1907,6 +1907,7 @@ add_noproviderinfo(ExpanderCtx *xpctx, Id dep, Id who)
   Pool *pool = xpctx->pool;
   Reldep *rd, *prd;
   Id p, pp, prov, *provp;
+  int nprovinfo;
 
   if (xpctx->xp->debug)
     {
@@ -1920,6 +1921,7 @@ add_noproviderinfo(ExpanderCtx *xpctx, Id dep, Id who)
   rd = GETRELDEP(pool, dep);
   if (rd->flags >= 8 || ISRELDEP(rd->name) || ISRELDEP(rd->evr))
     return;
+  nprovinfo = 0;
   FOR_PROVIDES(p, pp, rd->name)
     {
       Solvable *s = pool->solvables + p;
@@ -1945,6 +1947,8 @@ add_noproviderinfo(ExpanderCtx *xpctx, Id dep, Id who)
 		expander_dbg(xpctx->xp, "%s provides version %s\n", expander_solvid2str(xpctx->xp, p), pool_id2str(pool, prd->evr));
 	      queue_push2(&xpctx->errors, prd->evr, p);
 	    }
+	  if (++nprovinfo >= 4)
+	    return;		/* only show the first 4 providers */
 	}
     }
 }
