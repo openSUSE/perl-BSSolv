@@ -477,7 +477,7 @@ data2solvables(Repo *repo, Repodata *data, SV *rsv)
   SSize_t ravi = 0;
   HV *rhv = 0;
   SV *sv;
-  char *str, *key;
+  char *key;
   I32 keyl;
 
   if (SvTYPE(rsv) == SVt_PVAV)
@@ -512,12 +512,16 @@ data2solvables(Repo *repo, Repodata *data, SV *rsv)
 
   /* set meta information */
   repodata_set_str(data, SOLVID_META, buildservice_repocookie, REPOCOOKIE);
-  str = hvlookupstr(rhv, "/url", 4);
-  if (str)
-    repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
-  str = hvlookupstr(rhv, "/dodcookie", 10);
-  if (str)
-    repodata_set_str(data, SOLVID_META, buildservice_dodcookie, str);
+  if (rhv)
+    {
+      char *str;
+      str = hvlookupstr(rhv, "/url", 4);
+      if (str)
+	repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
+      str = hvlookupstr(rhv, "/dodcookie", 10);
+      if (str)
+	repodata_set_str(data, SOLVID_META, buildservice_dodcookie, str);
+    }
 }
 
 static SV *
