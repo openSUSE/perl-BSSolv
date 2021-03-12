@@ -438,7 +438,7 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
 	    s->evr = rd->evr;
 	}
     }
-  if (s->evr)
+  if (s->evr && s->arch != ARCH_SRC && s->arch != ARCH_NOSRC)
     s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
   str = hvlookupstr(hv, "checksum", 8);
   if (str)
@@ -2744,25 +2744,92 @@ has_keyname(Repo *repo, Id keyname)
   return 0;
 }
 
-static void
-create_module_map(Pool *pool, Map *modulemap)
+static inline int
+match_modules_req(Pool *pool, Id id)
 {
+  const char *dep = pool_id2str(pool, id);
+  Id *modules;
+  if (strncmp(dep, "platform", 8) == 0 && (dep[8] == 0 || dep[8] == '-'))
+    return 1;
+  for (modules = pool->appdata; *modules; modules++)
+    {
+      const char *name, *rname;
+      if (*modules == id)
+	return 1;
+      name = pool_id2str(pool, *modules);
+      if ((rname = strrchr(name, '-')) == 0 || rname == name)
+	continue;
+      if (!strncmp(dep, rname, rname - name) && dep[rname - name] == 0)
+	return 1;
+    }
+  return 0;
+}
+
+static void
+create_module_map(Repo *repo, Map *modulemap, Queue *modulemapq)
+{
+  Pool *pool = repo->pool;
   Id *modules = pool->appdata;
-  map_grow(modulemap, pool->ss.nstrings);
+  int i, have_moduleinfo = 0;
+  Id id, p, *pp;
+  Solvable *s;
+
+  if (!modulemap->size)
+    map_grow(modulemap, pool->ss.nstrings);
   if (!modules)
     return;
   if (!*modules)
-    map_setall(modulemap);
-  for (; *modules; modules++)
+    {
+      map_setall(modulemap);
+      return;
+    }
+  /* clear old bits */
+  if (modulemapq->count)
+    {
+      for (i = 0; i < modulemapq->count; i++)
+	MAPCLR(modulemap, modulemapq->elements[i]);
+      queue_empty(modulemapq);
+    }
+  for (modules = pool->appdata; *modules; modules++)
     MAPSET(modulemap, *modules);
+  /* look for module information stored in "buildservice:modules" solvables */
+  FOR_REPO_SOLVABLES(repo, p, s)
+    {
+      if (s->name != buildservice_modules || s->arch != ARCH_SRC)
+	continue;
+      have_moduleinfo = 1;
+      id = s->repo->idarraydata[s->provides];
+      if (id < 1 || id >= pool->ss.nstrings || !MAPTST(modulemap, id))
+	continue;	/* not what we're looking for */
+      for (pp = s->repo->idarraydata + s->requires; (id = *pp) != 0; pp++)
+        {
+          /* check if the dep is fulfilled by any module in the list */
+          if (id < 1 || id >= pool->ss.nstrings)
+	    break;	/* hey! */
+          if (!MAPTST(modulemap, id) && !match_modules_req(pool, id))
+	    break;	/* could not fulfil requires */
+        }
+      if (id)
+	continue;	/* could not fulfil one of the requires, ignore module */
+      queue_push(modulemapq, s->evr);
+    }
+  if (!have_moduleinfo)
+    {
+      /* old style repo with no moduleinfo at all. simple use the unexpanded ids */
+      for (modules = pool->appdata; *modules; modules++)
+        queue_push(modulemapq, *modules);
+      return;
+    }
+  for (modules = pool->appdata; *modules; modules++)
+    MAPCLR(modulemap, *modules);
+  for (i = 0; i < modulemapq->count; i++)
+    MAPSET(modulemap, modulemapq->elements[i]);
 }
 
 static int
 in_module_map(Pool *pool, Map *modulemap, Queue *modules)
 {
   int i;
-  if (!modulemap->size)
-    create_module_map(pool, modulemap);
   for (i = 0; i < modules->count; i++)
     { 
       Id id = modules->elements[i];
@@ -2785,18 +2852,22 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
   int mayhave_modules;
   Queue modules;
   Map modulemap;
+  Queue modulemapq;
+  int modulemap_uptodate;
 
   map_init(considered, pool->nsolvables);
   best = solv_calloc(sizeof(Id), pool->ss.nstrings);
   
   queue_init(&modules);
   map_init(&modulemap, 0);
+  queue_init(&modulemapq);
   FOR_REPOS(ridx, repo)
     {
       if (repoonly && repo != repoonly)
 	continue;
       dodrepo = repo_lookup_str(repo, SOLVID_META, buildservice_dodurl) != 0;
       mayhave_modules = has_keyname(repo, buildservice_modules) ? 1 : 0;
+      modulemap_uptodate = 0;
       FOR_REPO_SOLVABLES(repo, p, s)
 	{
 	  int inmodule = 0;
@@ -2808,8 +2879,16 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
 	    {
 	      solvable_lookup_idarray(s, buildservice_modules, &modules);
 	      inmodule = modules.count ? 1 : 0;
-	      if (inmodule && !in_module_map(pool, &modulemap, &modules))
-		continue;		/* nope, ignore package */
+	      if (inmodule)
+		{
+		  if (!modulemap_uptodate)
+		    {
+		      create_module_map(repo, &modulemap, &modulemapq);
+		      modulemap_uptodate = 1;
+		    }
+		  if (!in_module_map(pool, &modulemap, &modules))
+		    continue;		/* nope, ignore package */
+		}
 	    }
 	  if (unorderedrepos && sb && s->repo->priority != sb->repo->priority)
 	    {
@@ -2900,6 +2979,7 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
   solv_free(best);
   queue_free(&modules);
   map_free(&modulemap);
+  queue_free(&modulemapq);
   if (olddisttype >= 0 && pool->disttype != olddisttype)
     set_disttype(pool, olddisttype);
 }
@@ -5118,6 +5198,20 @@ unifymodules_cmp(const void *ap, const void *bp, void *dp)
 }
 
 static int
+missingmodules_cmp(const void *ap, const void *bp, void *dp)
+{
+  const Id *a = ap;
+  const Id *b = bp;
+  if (a[0] != b[0])
+    return a[0] - b[0];
+  if (!a[1] && b[1])
+    return -1;
+  if (!b[1] && a[1])
+    return 1;
+  return a[1] - b[1];
+}
+
+static int
 is_dod_package(Solvable *s)
 {
   const char *str = solvable_lookup_str(s, buildservice_id);
@@ -7016,6 +7110,61 @@ modulesfrombins(BSSolv::repo repo, ...)
 	}
 
 void
+missingmodules(BSSolv::repo repo, ...)
+    PPCODE:
+	{
+	    Pool *pool = repo->pool;
+            Id p, *pp, *modules, id, req, lastid1, lastid2;
+	    Solvable *s;
+	    Queue missingq;
+	    int i, missing;
+
+	    queue_init(&missingq);
+	    if (pool->appdata && ((Id *)pool->appdata)[0] && has_keyname(repo, buildservice_modules))
+	      {
+		FOR_REPO_SOLVABLES(repo, p, s)
+		  {
+		    if (s->name != buildservice_modules || s->arch != ARCH_SRC || !s->requires)
+		      continue;
+		    id = s->repo->idarraydata[s->provides];
+		    for (modules = pool->appdata; *modules; modules++)
+		      if (id == *modules)
+			break;
+		    if (!*modules)
+		      continue;
+		    missing = 0;
+		    for (pp = s->repo->idarraydata + s->requires; (req = *pp) != 0; pp++)
+		      if (!match_modules_req(pool, req))
+			{
+			  missing = 1;
+			  queue_push2(&missingq, id, req);
+			}
+		    if (!missing)	/* we're good */
+		      queue_push2(&missingq, id, 0);
+		  }
+		/* sort and unify */
+		solv_sort(missingq.elements, missingq.count / 2, sizeof(Id) * 2, missingmodules_cmp, 0);
+		lastid1 = lastid2 = -1;
+		for (i = 0; i < missingq.count; i += 2)
+		  {
+		    if (missingq.elements[i] == lastid1 && missingq.elements[i + 1] == lastid2)
+		      continue;
+		    if (missingq.elements[i] != lastid1)
+		      {
+			lastid1 = missingq.elements[i];
+			lastid2 = missingq.elements[i + 1];
+		      }
+		    if (!lastid2)
+		      continue;
+		    lastid2 = missingq.elements[i + 1];
+		    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, lastid1), 0)));
+		    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, lastid2), 0)));
+		  }
+		queue_free(&missingq);
+	      }
+	}
+
+void
 getpathid(BSSolv::repo repo)
     PPCODE:
 	{
@@ -7109,24 +7258,30 @@ getmodules(BSSolv::repo repo)
 	    Pool *pool = repo->pool;
 	    Id p, lastid = -1;
 	    Solvable *s;
-	    Queue modules;
 	    Queue collectedmodules;
 	    int i;
 
 	    queue_init(&collectedmodules);
-	    queue_init(&modules);
 	    FOR_REPO_SOLVABLES(repo, p, s)
+	      if (s->name == buildservice_modules && s->arch == ARCH_SRC && s->repo->idarraydata[s->provides])
+	        queue_push(&collectedmodules, s->repo->idarraydata[s->provides]);
+	    if (!collectedmodules.count)
 	      {
-	        solvable_lookup_idarray(pool->solvables + p, buildservice_modules, &modules);
-		for (i = 0; i < modules.count; i++)
+	        Queue modules;
+		queue_init(&modules);
+		FOR_REPO_SOLVABLES(repo, p, s)
 		  {
-		    if (modules.elements[i] == lastid)
-		      continue;
-		    lastid = modules.elements[i];
-		    queue_push(&collectedmodules, modules.elements[i]);
+		    solvable_lookup_idarray(pool->solvables + p, buildservice_modules, &modules);
+		    for (i = 0; i < modules.count; i++)
+		      {
+			if (modules.elements[i] == lastid)
+			  continue;
+			lastid = modules.elements[i];
+			queue_push(&collectedmodules, modules.elements[i]);
+		      }
 		  }
+		queue_free(&modules);
 	      }
-	    queue_free(&modules);
 	    /* sort and unify */
 	    solv_sort(collectedmodules.elements, collectedmodules.count, sizeof(Id), unifymodules_cmp, 0);
 	    lastid = -1;
