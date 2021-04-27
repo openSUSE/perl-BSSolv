@@ -2798,6 +2798,11 @@ create_module_map(Repo *repo, Map *modulemap, Queue *modulemapq)
       if (s->name != buildservice_modules || s->arch != ARCH_SRC)
 	continue;
       have_moduleinfo = 1;
+      if (s->evr >= 1 && s->evr < pool->ss.nstrings && MAPTST(modulemap, s->evr))
+	{
+	  queue_push(modulemapq, s->evr);	/* directly addressed */
+	  continue;
+	}
       id = s->repo->idarraydata[s->provides];
       if (id < 1 || id >= pool->ss.nstrings || !MAPTST(modulemap, id))
 	continue;	/* not what we're looking for */
