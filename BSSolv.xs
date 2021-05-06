@@ -131,10 +131,11 @@ static Id buildservice_id;
 static Id buildservice_repocookie;
 static Id buildservice_external;
 static Id buildservice_dodurl;
-static Id expander_directdepsend;
 static Id buildservice_dodcookie;
+static Id buildservice_dodresources;
 static Id buildservice_annotation;
 static Id buildservice_modules;
+static Id expander_directdepsend;
 
 static int genmetaalgo;
 
@@ -515,12 +516,23 @@ data2solvables(Repo *repo, Repodata *data, SV *rsv)
   if (rhv)
     {
       char *str;
+      AV *av;
       str = hvlookupstr(rhv, "/url", 4);
       if (str)
 	repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
       str = hvlookupstr(rhv, "/dodcookie", 10);
       if (str)
 	repodata_set_str(data, SOLVID_META, buildservice_dodcookie, str);
+      av = hvlookupav(rhv, "/dodresources", 13);
+      if (av)
+	{
+	  SSize_t i;
+	  for (i = 0; i <= av_len(av); i++)
+	    {
+	      Id id = pool_str2id(repo->pool, avlookupstr(av, i), 1);
+	      repodata_add_idarray(data, SOLVID_META, buildservice_dodresources, id);
+	    }
+	}
     }
 }
 
@@ -6169,6 +6181,7 @@ new(char *packname = "BSSolv::pool")
 	    buildservice_dodurl = pool_str2id(pool, "buildservice:dodurl", 1);
 	    expander_directdepsend = pool_str2id(pool, "-directdepsend--", 1);
 	    buildservice_dodcookie = pool_str2id(pool, "buildservice:dodcookie", 1);
+	    buildservice_dodresources = pool_str2id(pool, "buildservice:dodresources", 1);
 	    buildservice_annotation = pool_str2id(pool, "buildservice:annotation", 1);
 	    buildservice_modules = pool_str2id(pool, "buildservice:modules", 1);
 	    pool_freeidhashes(pool);
@@ -7221,6 +7234,21 @@ dodcookie(BSSolv::repo repo)
 	RETVAL
 
 void
+dodresources(BSSolv::repo repo)
+    PPCODE:
+	{
+	  Pool *pool = repo->pool;
+	  Queue dodresources;
+	  int i;
+
+	  queue_init(&dodresources);
+	  repo_lookup_idarray(repo, SOLVID_META, buildservice_dodresources, &dodresources);
+	  for (i = 0; i < dodresources.count; i++)
+	    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, dodresources.elements[i]), 0)));
+	  queue_free(&dodresources);
+	}
+
+void
 updatedoddata(BSSolv::repo repo, HV *rhv = 0)
     CODE:
 	{
@@ -7237,6 +7265,7 @@ updatedoddata(BSSolv::repo repo, HV *rhv = 0)
 	    data = repo_add_repodata(repo, REPO_REUSE_REPODATA);
 	    repodata_unset(data, SOLVID_META, buildservice_dodurl);
 	    repodata_unset(data, SOLVID_META, buildservice_dodcookie);
+	    repodata_unset(data, SOLVID_META, buildservice_dodresources);
 	    /* add new data */
 	    if (rhv)
 		data2solvables(repo, data, (SV *)rhv);
