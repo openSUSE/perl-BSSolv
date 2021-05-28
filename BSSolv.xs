@@ -1166,6 +1166,13 @@ expander_check_cplxblock(ExpanderCtx *xpctx, Id p, Id dep, int deptype, Id *ptr,
 	    {
 	      if (p == -pp)
 		continue;	/* ignore redundant self-entry */
+	      if (deptype == DEPTYPE_REQUIRES)
+		{
+		  /* do not report a requires as conflicts */
+		  queue_push(&xpctx->errors, ERROR_NOPROVIDER);
+		  queue_push2(&xpctx->errors, dep, p);
+		  break;
+		}
 	      queue_push(&xpctx->errors, ERROR_CONFLICT);
 	      queue_push2(&xpctx->errors, p, -pp);
 	    }
