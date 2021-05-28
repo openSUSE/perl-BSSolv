@@ -375,7 +375,7 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
 }
 
 static int
-data2pkg(Repo *repo, Repodata *data, HV *hv)
+data2pkg(Repo *repo, Repodata *data, HV *hv, int isdod)
 {
   Pool *pool = repo->pool;
   char *str;
@@ -408,15 +408,28 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
 	ss = str;
       repodata_set_str(data, p, SOLVABLE_MEDIAFILE, ss);
     }
-  str = hvlookupstr(hv, "id", 2);
-  if (str)
-    repodata_set_str(data, p, buildservice_id, str);
+  if (isdod)
+    repodata_set_str(data, p, buildservice_id, "dod");
+  else
+    {
+      str = hvlookupstr(hv, "id", 2);
+      if (str)
+	repodata_set_str(data, p, buildservice_id, str);
+    }
   str = hvlookupstr(hv, "source", 6);
   if (str)
     repodata_set_poolstr(data, p, SOLVABLE_SOURCENAME, str);
-  str = hvlookupstr(hv, "hdrmd5", 6);
-  if (str && strlen(str) == 32)
-    repodata_set_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, str);
+  if (isdod)
+    {
+      static unsigned char dod_pkgid[16] = { 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0 };
+      repodata_set_bin_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, dod_pkgid);
+    }
+  else
+    {
+      str = hvlookupstr(hv, "hdrmd5", 6);
+      if (str && strlen(str) == 32)
+	repodata_set_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, str);
+    }
   s->provides    = importdeps(hv, "provides", 8, repo);
   s->obsoletes   = importdeps(hv, "obsoletes", 9, repo);
   s->conflicts   = importdeps(hv, "conflicts", 9, repo);
@@ -472,7 +485,7 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
 }
 
 static void
-data2solvables(Repo *repo, Repodata *data, SV *rsv)
+data2solvables(Repo *repo, Repodata *data, SV *rsv, int isdod)
 {
   AV *rav = 0;
   SSize_t ravi = 0;
@@ -508,7 +521,7 @@ data2solvables(Repo *repo, Repodata *data, SV *rsv)
 	}
       if (!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVHV)
 	continue;
-      data2pkg(repo, data, (HV *)SvRV(sv));
+      data2pkg(repo, data, (HV *)SvRV(sv), isdod);
     }
 
   /* set meta information */
@@ -3108,7 +3121,7 @@ repo_add_obsbinlnk(Repo *repo, const char *path, int flags)
       return 0;
     }
   data = repo_add_repodata(repo, flags);
-  p = data2pkg(repo, data, (HV *)sv);
+  p = data2pkg(repo, data, (HV *)sv, 0);
   SvREFCNT_dec(sv);
   if (!(flags & REPO_NO_INTERNALIZE))
     repodata_internalize(data);
@@ -6300,7 +6313,7 @@ repofromdata(BSSolv::pool pool, char *name, SV *rv)
 		croak("BSSolv::pool::repofromdata: rv is not a HASH or ARRAY reference");
 	    repo = repo_create(pool, name);
 	    data = repo_add_repodata(repo, 0);
-	    data2solvables(repo, data, SvRV(rv));
+	    data2solvables(repo, data, SvRV(rv), 0);
 	    if (name && !strcmp(name, "/external/"))
 	      repodata_set_void(data, SOLVID_META, buildservice_external);
 	    repo_internalize(repo);
@@ -6797,6 +6810,13 @@ DESTROY(BSSolv::pool pool)
 MODULE = BSSolv		PACKAGE = BSSolv::repo		PREFIX = repo
 
 void
+freerepo(BSSolv::repo repo)
+    CODE:
+	{
+	  repo_free(repo, 1);
+	}
+
+void
 allpackages(BSSolv::repo repo)
     PPCODE:
 	{
@@ -7275,7 +7295,7 @@ updatedoddata(BSSolv::repo repo, HV *rhv = 0)
 	    repodata_unset(data, SOLVID_META, buildservice_dodresources);
 	    /* add new data */
 	    if (rhv)
-		data2solvables(repo, data, (SV *)rhv);
+		data2solvables(repo, data, (SV *)rhv, 1);
 	    repo_internalize(repo);
 	}
 
@@ -7335,6 +7355,42 @@ getmodules(BSSolv::repo repo)
 	      }
 	    queue_free(&collectedmodules);
 	  }
+
+void
+getdodblobs(BSSolv::repo repo)
+    PPCODE:
+	{
+	    Pool *pool = repo->pool;
+	    int i;
+	    Id p;
+	    Solvable *s;
+	    Stringpool ss;
+	    stringpool_init_empty(&ss);
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      {
+		const char *str = solvable_lookup_str(s, buildservice_id);
+		unsigned int medianr;
+		const char *s, *se;
+		if (!str || strcmp(str, "dod") != 0)
+		  continue;
+		s = solvable_get_location(pool->solvables + p, &medianr);
+		if ((s = strrchr(s, '?')) == 0)
+		  continue;
+		for (++s; s; s = se ? se + 1 : 0)
+		  {
+		    se = strchr(s, ',');
+		    if (se)
+		      stringpool_strn2id(&ss, s, se - s, 1);
+		    else
+		      stringpool_str2id(&ss, s, 1);
+		  }
+	      }
+	    for (i = 2; i < ss.nstrings; i++)
+	      {
+	        XPUSHs(sv_2mortal(newSVpv(stringpool_id2str(&ss, i), 0)));
+	      }
+	    stringpool_free(&ss);
+	}
 
 
 MODULE = BSSolv		PACKAGE = BSSolv::expander	PREFIX = expander
