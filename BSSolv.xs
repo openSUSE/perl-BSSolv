@@ -58,6 +58,7 @@
 #define EXPANDER_OPTION_DOSUPPLEMENTS			(1 << 3)
 #define EXPANDER_OPTION_USERECOMMENDSFORCHOICES		(1 << 4)
 #define EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES	(1 << 5)
+#define EXPANDER_OPTION_KEEPFILEREQUIRES		(1 << 6)
 
 typedef struct _Expander {
   Pool *pool;
@@ -90,6 +91,7 @@ typedef struct _Expander {
   int usesupplementsforchoices;
   int dorecommends;
   int dosupplements;
+  int keepfilerequires;
 } Expander;
 
 typedef struct _ExpanderCtx {
@@ -117,6 +119,7 @@ typedef struct _ExpanderCtx {
   int usesupplementsforchoices;
   int dorecommends;
   int dosupplements;
+  int keepfilerequires;
 
   /* hacks */
   Solvable *ignore_s;		/* small hack: ignore requires of this solvable */
@@ -1010,7 +1013,7 @@ expander_dbg(Expander *xp, const char *format, ...)
   l = strlen(buf);
   if ((xp->debug & (EXPANDER_DEBUG_ALL | EXPANDER_DEBUG_STDOUT)) != 0)
     {
-      printf("%s", buf);
+      fprintf(stderr, "%s", buf);
       if (buf[0] != ' ' || (l && buf[l - 1] == '\n'))
         fflush(stdout);
     }
@@ -1077,7 +1080,6 @@ expander_isignored(Expander *xp, Solvable *s, Id req)
   Pool *pool = xp->pool;
   Id id = id2name(pool, req);
   const char *n;
-
   if (!xp->ignoreignore)
     {
       if (MAPTST(&xp->ignored, id))
@@ -1098,7 +1100,7 @@ expander_isignored(Expander *xp, Solvable *s, Id req)
     }
   if (*n == '/')
     {
-      if (!xp->havefileprovides || pool->whatprovides[id] <= 1)
+      if (!xp->keepfilerequires && (!xp->havefileprovides || pool->whatprovides[id] <= 1))
 	{
 	  MAPEXP(&xp->ignored, id);
 	  MAPSET(&xp->ignored, id);
@@ -2019,6 +2021,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   xpctx.usesupplementsforchoices = options & EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES ? 1 : xp->usesupplementsforchoices;
   xpctx.dorecommends = options & EXPANDER_OPTION_DORECOMMENDS ? 1 : xp->dorecommends;
   xpctx.dosupplements = options & EXPANDER_OPTION_DOSUPPLEMENTS ? 1 : xp->dosupplements;
+  xpctx.keepfilerequires = options & EXPANDER_OPTION_KEEPFILEREQUIRES ? 1 : xp->keepfilerequires;
   map_init(&xpctx.installed, pool->nsolvables);
   map_init(&xpctx.conflicts, 0);
   map_init(&xpctx.recommended, 0);
@@ -2609,6 +2612,7 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
   xp->usesupplementsforchoices = options & EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES ? 1 : 0;
   xp->dorecommends = options & EXPANDER_OPTION_DORECOMMENDS ? 1 : 0;
   xp->dosupplements = options & EXPANDER_OPTION_DOSUPPLEMENTS ? 1 : 0;
+  xp->keepfilerequires = options & EXPANDER_OPTION_KEEPFILEREQUIRES ? 1 : 0;
 
   queue_init(&xp->preferposq);
   for (i = 0; i < preferpos->count; i++)
@@ -7533,6 +7537,10 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 	    sv = svp ? *svp : 0;
 	    if (sv && SvTRUE(sv))
 	      options |= EXPANDER_OPTION_DOSUPPLEMENTS | EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES;
+	    svp = hv_fetch(config, "expandflags:keepfilerequires", 28, 0);
+	    sv = svp ? *svp : 0;
+	    if (sv && SvTRUE(sv))
+	      options |= EXPANDER_OPTION_KEEPFILEREQUIRES;
 	    svp = hv_fetch(config, "expand_dbg", 10, 0);
 	    sv = svp ? *svp : 0;
 	    if (sv && SvOK(sv))
@@ -7593,6 +7601,8 @@ expand(BSSolv::expander xp, ...)
 		      options |= EXPANDER_OPTION_DOSUPPLEMENTS | EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES;
 		    else if (!strcmp(s, "--ignoreconflicts--"))
 		      options |= EXPANDER_OPTION_IGNORECONFLICTS;
+		    else if (!strcmp(s, "--keepfilerequires--"))
+		      options |= EXPANDER_OPTION_KEEPFILEREQUIRES;
 		    continue;
 		  }
 		if (*s == '-')
