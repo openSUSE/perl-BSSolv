@@ -138,6 +138,7 @@ static Id buildservice_modules;
 static Id expander_directdepsend;
 
 static int genmetaalgo;
+static int depsortsccs;
 
 /* make sure bit n is usable */
 #define MAPEXP(m, n) ((m)->size < (((n) + 8) >> 3) ? map_grow(m, n + 256) : 0)
@@ -5272,6 +5273,74 @@ find_corresponding_dod(Solvable *s)
   return 0;
 }
 
+struct scc_data {
+  Id *edata;
+  Id *vedge;
+  Queue *sccs;
+  int *stack;
+  int nstack;
+  int *low;
+  int idx;
+};
+
+/* Tarjan's SCC algorithm */
+static int
+scc_visit(struct scc_data *scc, int node)
+{
+  int l, myidx, i, *low = scc->low;
+  int stackstart = scc->nstack++;
+  Id *e;
+  scc->stack[stackstart] = node;
+  low[node] = myidx = scc->idx++;
+  for (e = scc->edata + scc->vedge[node]; *e; e++)
+    {
+      if (*e == -1 || *e == node)
+	continue;
+      if (!(l = low[*e]))
+	l = scc_visit(scc, *e);
+      if (l > 0 && l < low[node])
+	low[node] = l;
+    }
+  if (low[node] != myidx)
+    return low[node];
+  if (scc->nstack - stackstart > 1)
+    {
+      for (i = stackstart; i < scc->nstack; i++)
+	{
+	  queue_push(scc->sccs, scc->stack[i]);
+	  low[scc->stack[i]] = -1;
+	}
+      queue_push(scc->sccs, 0);
+    }
+  scc->nstack = stackstart;
+  return (low[node] = -1);
+}
+
+static void
+find_sccs(Queue *edata, Queue *vedge, Queue *sccs)
+{
+  struct scc_data scc;
+  int i;
+  scc.edata = edata->elements;
+  scc.vedge = vedge->elements;
+  scc.sccs = sccs;
+  scc.stack = solv_calloc(vedge->count, 2 * sizeof(int));
+  scc.low = scc.stack + vedge->count;
+  scc.idx = 1;
+  for (i = 1; i < vedge->count; i++)
+    if (!scc.edata[vedge->elements[i]])
+      scc.low[i] = -1;
+  for (i = 1; i < vedge->count; i++)
+    {
+      if (scc.low[i])
+	continue;
+      scc.nstack = scc.idx;
+      scc_visit(&scc, i);
+    }
+  solv_free(scc.stack);
+}
+
+
 MODULE = BSSolv		PACKAGE = BSSolv
 
 void
@@ -5298,6 +5367,7 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 	    Queue todo;
 	    Queue cycles;
 	    Map edgeunifymap;
+	    int didsccs = 0;
 
 	    if (ix)
 	      {
@@ -5508,6 +5578,13 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 		    continue;
 		  }
 		/* oh no, we found a cycle, record and break it */
+		if (depsortsccs && !didsccs && cycp)
+		  {
+		    /* use Tarjan's SCC algorithm */
+		    find_sccs(&edata, &vedge, &cycles);
+		    queue_push(&cycles, 0);
+		    didsccs = cycles.count;
+		  }
 		cy = cycles.count;
 		for (j = todo.count - 1; j >= 0; j--)
 		  if (todo.elements[j] == -i)
@@ -5543,7 +5620,10 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 		todo.count = cycstart + 1;
 	      }
 
-	    /* recored cycles */
+	    if (didsccs && depsortsccs != 2)
+	      queue_truncate(&cycles, didsccs - 1);
+
+	    /* record cycles */
 	    if (cycles.count && cycp && SvROK(cycp) && SvTYPE(SvRV(cycp)) == SVt_PVAV)
 	      {
 		AV *av = (AV *)SvRV(cycp);
@@ -5567,6 +5647,14 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 	    solv_free(mark);
 	    solv_free(names);
 	}
+
+int
+setdepsortsccs(int flag)
+    CODE:
+	depsortsccs = flag;
+	RETVAL = flag;
+    OUTPUT:
+	RETVAL
 
 int
 setgenmetaalgo(int algo)
