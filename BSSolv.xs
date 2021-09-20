@@ -5283,14 +5283,24 @@ struct scc_data {
   int idx;
 };
 
+static void
+scc_collect(struct scc_data *scc, int node)
+{
+  int *low = scc->low;
+  Id *e;
+  queue_push(scc->sccs, node);
+  low[node] = -1;
+  for (e = scc->edata + scc->vedge[node]; *e; e++)
+    if (*e != -1 && low[*e] > 0)
+      scc_collect(scc, *e);
+}
+
 /* Tarjan's SCC algorithm */
 static int
 scc_visit(struct scc_data *scc, int node)
 {
-  int l, myidx, i, *low = scc->low;
-  int stackstart = scc->nstack++;
+  int l, myidx, *low = scc->low, nontrivial = 0;
   Id *e;
-  scc->stack[stackstart] = node;
   low[node] = myidx = scc->idx++;
   for (e = scc->edata + scc->vedge[node]; *e; e++)
     {
@@ -5298,22 +5308,20 @@ scc_visit(struct scc_data *scc, int node)
 	continue;
       if (!(l = low[*e]))
 	l = scc_visit(scc, *e);
+      if (l > 0)
+	nontrivial = 1;
       if (l > 0 && l < low[node])
 	low[node] = l;
     }
   if (low[node] != myidx)
     return low[node];
-  if (scc->nstack - stackstart > 1)
+  low[node] = -1;
+  if (nontrivial)
     {
-      for (i = stackstart; i < scc->nstack; i++)
-	{
-	  queue_push(scc->sccs, scc->stack[i]);
-	  low[scc->stack[i]] = -1;
-	}
+      scc_collect(scc, node);
       queue_push(scc->sccs, 0);
     }
-  scc->nstack = stackstart;
-  return (low[node] = -1);
+  return -1;
 }
 
 static void
@@ -5324,20 +5332,15 @@ find_sccs(Queue *edata, Queue *vedge, Queue *sccs)
   scc.edata = edata->elements;
   scc.vedge = vedge->elements;
   scc.sccs = sccs;
-  scc.stack = solv_calloc(vedge->count, 2 * sizeof(int));
-  scc.low = scc.stack + vedge->count;
+  scc.low = solv_calloc(vedge->count, sizeof(int));
   scc.idx = 1;
   for (i = 1; i < vedge->count; i++)
     if (!scc.edata[vedge->elements[i]])
       scc.low[i] = -1;
   for (i = 1; i < vedge->count; i++)
-    {
-      if (scc.low[i])
-	continue;
-      scc.nstack = scc.idx;
+    if (!scc.low[i])
       scc_visit(&scc, i);
-    }
-  solv_free(scc.stack);
+  solv_free(scc.low);
 }
 
 
