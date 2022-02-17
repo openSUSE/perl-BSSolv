@@ -2792,7 +2792,7 @@ match_modules_req(Pool *pool, Id id)
       name = pool_id2str(pool, *modules);
       if ((rname = strrchr(name, '-')) == 0 || rname == name)
 	continue;
-      if (!strncmp(dep, rname, rname - name) && dep[rname - name] == 0)
+      if (!strncmp(dep, name, rname - name) && dep[rname - name] == 0)
 	return 1;
     }
   return 0;
