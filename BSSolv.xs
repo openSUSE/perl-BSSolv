@@ -420,6 +420,11 @@ data2pkg(Repo *repo, Repodata *data, HV *hv, int isdod)
   str = hvlookupstr(hv, "source", 6);
   if (str)
     repodata_set_poolstr(data, p, SOLVABLE_SOURCENAME, str);
+#if LIBSOLV_VERSION >= 722
+  str = hvlookupstr(hv, "multiarch", 9);
+  if (str)
+    repodata_set_poolstr(data, p, SOLVABLE_MULTIARCH, str);
+#endif
   if (isdod)
     {
       static unsigned char dod_pkgid[16] = { 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0 };
@@ -6713,6 +6718,11 @@ pkg2data(BSSolv::pool pool, int p)
 	    ss = solvable_lookup_str(s, buildservice_id);
 	    if (ss)
 	      (void)hv_store(RETVAL, "id", 2, newSVpv(ss, 0), 0);
+#if LIBSOLV_VERSION >= 722
+	    ss = solvable_lookup_str(s, SOLVABLE_MULTIARCH);
+	    if (ss)
+	      (void)hv_store(RETVAL, "multiarch", 9, newSVpv(ss, 0), 0);
+#endif
 	    ss = solvable_lookup_str(s, buildservice_annotation);
 	    if (ss)
 	      (void)hv_store(RETVAL, "annotation", 10, newSVpv(ss, 0), 0);
