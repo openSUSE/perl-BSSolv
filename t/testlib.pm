@@ -95,6 +95,8 @@ sub parserepo {
         $packages[-1]->{'release'} = $3 if defined $3;
       }
       $packages[-1]->{$knowndeps{$1}} = \@ss;
+    } elsif ($s =~ /^M:/) {
+      $packages[-1]->{'multiarch'} = $ss[0]
     }
   }
   #@packages = reverse @packages;

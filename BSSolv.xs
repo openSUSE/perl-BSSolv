@@ -96,6 +96,7 @@ typedef struct _ExpanderCtx {
   Pool *pool;
   Expander *xp;
   Queue *out;			/* the result */
+  Queue *native;		/* native dependencies found */
   Map installed;		/* installed packages */
   Map conflicts;		/* conflicts from installed packages */
   Queue conflictsinfo;		/* source info for the above */
@@ -1448,6 +1449,39 @@ recheck_conddeps(ExpanderCtx *xpctx)
     }
 }
 
+static int
+expander_check_native(ExpanderCtx *xpctx, Id p, Id dep)
+{
+#if LIBSOLV_VERSION >= 722
+  Pool *pool = xpctx->pool;
+  Expander *xp = xpctx->xp;
+  const char *multiarch;
+  if (!xpctx->native)
+    return 0;
+  multiarch = solvable_lookup_str(pool->solvables + p, SOLVABLE_MULTIARCH);
+  if (!multiarch)
+    return 0;
+  if (!strcmp(multiarch, "foreign"))
+    {
+      if (xp->debug)
+        expander_dbg(xp, "set %s to native because of %s [foreign]\n", pool_dep2str(pool, dep), expander_solvid2name(xp, p));
+      queue_push(xpctx->native, dep);
+      return 1;
+    }
+  if (!strcmp(multiarch, "allowed"))
+    {
+      if (strstr(pool_dep2str(pool, dep), ":any"))	/* FIXME: do this right */
+	{
+          if (xp->debug)
+            expander_dbg(xp, "set %s to native because of %s [allowed]\n", pool_dep2str(pool, dep), expander_solvid2name(xp, p));
+	  queue_push(xpctx->native, dep);
+	  return 1;
+	}
+    }
+#endif
+  return 0;
+}
+
 /* install a single package */
 static void
 expander_installed(ExpanderCtx *xpctx, Id p)
@@ -1457,6 +1491,8 @@ expander_installed(ExpanderCtx *xpctx, Id p)
   Solvable *s = pool->solvables + p;
   Id req, *reqp, con, *conp;
 
+  if (!p)
+    return;
 #if 0
 printf("expander_installed %s\n", pool_solvid2str(pool, p));
 #endif
@@ -1596,7 +1632,7 @@ expander_installed_multiple(ExpanderCtx *xpctx, Queue *toinstall)
   for (i = j = 0; i < toinstall->count; i++)
     {
       Id p = toinstall->elements[i];
-      if (MAPTST(&xpctx->installed, p))
+      if (!p || MAPTST(&xpctx->installed, p))
 	continue;	/* already seen */
       MAPSET(&xpctx->installed, p);
       toinstall->elements[j++] = p;
@@ -1995,8 +2031,38 @@ add_noproviderinfo(ExpanderCtx *xpctx, Id dep, Id who)
     }
 }
 
+#if LIBSOLV_VERSION >= 722
 static int
-expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignoreq, int options)
+pool_has_keyname(Pool *pool, Id keyname)
+{
+  Repo *repo;
+  Repodata *data;
+  int ridx, rdid;
+  FOR_REPOS(ridx, repo)
+    FOR_REPODATAS(repo, rdid, data)
+      if (repodata_has_keyname(data, keyname))
+        return 1;
+  return 0;
+}
+#endif
+
+static inline void
+expander_add_toinstall(ExpanderCtx *xpctx, Queue *toinstall, Id p, Id dep, Id whon)
+{
+  Expander *xp = xpctx->xp;
+  Pool *pool = xp->pool;
+  if (xpctx->native && expander_check_native(xpctx, p, dep))
+    {
+      queue_push(toinstall, 0);		/* mark progress */
+      return;
+    }
+  if (xp->debug)
+    expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, dep));
+  queue_push(toinstall, p);
+}
+
+static int
+expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignoreq, Queue *native, int options)
 {
   ExpanderCtx xpctx;
   Pool *pool = xp->pool;
@@ -2015,6 +2081,12 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   int ignoremapssaved = 0;
   int dorecstart = 0;
 
+#if LIBSOLV_VERSION >= 722
+  if (native && !pool_has_keyname(pool, SOLVABLE_MULTIARCH))
+    native = 0;
+#else
+  native = 0;
+#endif
   memset(&xpctx, 0, sizeof(xpctx));
   xpctx.xp = xp;
   xpctx.pool = pool;
@@ -2025,6 +2097,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   xpctx.usesupplementsforchoices = options & EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES ? 1 : xp->usesupplementsforchoices;
   xpctx.dorecommends = options & EXPANDER_OPTION_DORECOMMENDS ? 1 : xp->dorecommends;
   xpctx.dosupplements = options & EXPANDER_OPTION_DOSUPPLEMENTS ? 1 : xp->dosupplements;
+  xpctx.native = native;
   map_init(&xpctx.installed, pool->nsolvables);
   map_init(&xpctx.conflicts, 0);
   map_init(&xpctx.recommended, 0);
@@ -2156,9 +2229,9 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  queue_push2(&xpctx.todo, id, 0);	/* unclear, resolve later */
 	  continue;
 	}
-      if (xp->debug)
-	expander_dbg(xp, "added %s because of %s (direct dep)\n", expander_solvid2name(xp, q), pool_dep2str(pool, id));
-      queue_push(&toinstall, q);
+      if (xpctx.native && expander_check_native(&xpctx, q, id))
+	continue;
+      expander_add_toinstall(&xpctx, &toinstall, q, id, 0);
     }
 
   /* unify toinstall, check against conflicts */
@@ -2377,9 +2450,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
           if (qq.count == 1)
 	    {
 	      p = qq.elements[0];
-	      if (xp->debug)
-		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-	      queue_push(&toinstall, p);
+	      expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 	      continue;
 	    }
 	  /* pass is == 1 and we have multiple choices */
@@ -2428,9 +2499,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  if (qn == 1)
 	    {
 	      p = qe[0];
-	      if (xp->debug)
-		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-	      queue_push(&toinstall, p);
+	      expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 	      xpctx.todo.elements[ti] = 0;	/* kill entry */
 	    }
 	  choices.elements[tc + 2] = qn;
@@ -2457,9 +2526,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  if (qn == 1)
 	    {
 	      p = qe[0];
-	      if (xp->debug)
-		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-	      queue_push(&toinstall, p);
+	      expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 	      xpctx.todo.elements[ti] = 0;	/* kill entry */
 	    }
 	  choices.elements[tc + 2] = qn;
@@ -2489,9 +2556,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	      if (qn == 1)
 		{
 		  p = qe[0];
-		  if (xp->debug)
-		    expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-		  queue_push(&toinstall, p);
+		  expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 		  xpctx.todo.elements[ti] = 0;	/* kill entry */
 		}
 	      choices.elements[tc + 2] = qn;
@@ -2514,9 +2579,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	      if (qn == 1)
 		{
 		  p = qe[0];
-		  if (xp->debug)
-		    expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-		  queue_push(&toinstall, p);
+		  expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 		  xpctx.todo.elements[ti] = 0;	/* kill entry */
 		}
 	      choices.elements[tc + 2] = qn;
@@ -7662,14 +7725,16 @@ expand(BSSolv::expander xp, ...)
 	{
 	    Pool *pool;
 	    int i, nerrors;
+	    AV *nativeav = 0;
 	    Id id, who, indepbuf[64];
-	    Queue ignoreq, in, out, indep;
+	    Queue ignoreq, in, out, indep, native;
 	    int directdepsend = 0;
 	    int options = 0;
 
 	    queue_init(&ignoreq);
 	    queue_init(&in);
 	    queue_init(&out);
+	    queue_init(&native);
 	    queue_init_buffer(&indep, indepbuf, sizeof(indepbuf)/sizeof(*indepbuf));
 	    pool = xp->pool;
 	    if (xp->debug)
@@ -7694,6 +7759,15 @@ expand(BSSolv::expander xp, ...)
 		      options |= EXPANDER_OPTION_DOSUPPLEMENTS | EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES;
 		    else if (!strcmp(s, "--ignoreconflicts--"))
 		      options |= EXPANDER_OPTION_IGNORECONFLICTS;
+		    else if (!strcmp(s, "--extractnative--"))
+		      {
+			SV *sv = i + 1 < items ? ST(i + 1) : 0;
+			if (sv && SvROK(sv) && SvTYPE(SvRV(sv)) == SVt_PVAV)
+			  {
+			    nativeav = (AV *)SvRV(sv);
+			    i++;
+			  }
+		      }
 		    continue;
 		  }
 		if (*s == '-')
@@ -7722,7 +7796,7 @@ expand(BSSolv::expander xp, ...)
 	    if (xp->debug)
 	      expander_dbg(xp, "\n");
 
-	    nerrors = expander_expand(xp, &in, &indep, &out, &ignoreq, options);
+	    nerrors = expander_expand(xp, &in, &indep, &out, &ignoreq, nativeav ? &native : NULL, options);
 
 	    queue_free(&in);
 	    queue_free(&indep);
@@ -7868,7 +7942,16 @@ expand(BSSolv::expander xp, ...)
 		    Solvable *s = pool->solvables + out.elements[i];
 		    PUSHs(sv_2mortal(newSVpv(pool_id2str(pool, s->name), 0)));
 		  }
+		if (nativeav)
+		  {
+		    for (i = 0; i < native.count; i++)
+		      {
+			const char *str = pool_dep2str(pool, native.elements[i]);
+		        av_push(nativeav, newSVpv(str, 0));
+		      }
+		  }
 	      }
+	    queue_free(&native);
 	    queue_free(&out);
 	}
 
