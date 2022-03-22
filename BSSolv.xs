@@ -2608,6 +2608,28 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	}
     }
 
+  /* postprocress native queue */
+  if (xpctx.native)
+    {
+      /* remove entries that are provided by an installed package */
+      for (i = j = 0; i < xpctx.native->count; i++)
+	{
+	  id = xpctx.native->elements[i];
+	  if (id != expander_directdepsend)
+	    {
+	      FOR_PROVIDES(p, pp, id)
+		if (MAPTST(&xpctx.installed, p))
+		  break;
+	      if (p)
+		continue;
+	    }
+	  xpctx.native->elements[j++] = id;
+	}
+      /* remove directdepsend indicator if it is the last element */
+      if (xpctx.native->count && xpctx.native->elements[xpctx.native->count - 1] == expander_directdepsend)
+	queue_pop(xpctx.native);
+    }
+
   /* free data */
   map_free(&xpctx.installed);
   map_free(&xpctx.conflicts);
@@ -2660,8 +2682,6 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	}
     }
   queue_free(&xpctx.errors);
-  if (xpctx.native && xpctx.native->count && xpctx.native->elements[xpctx.native->count - 1] == expander_directdepsend)
-    queue_pop(xpctx.native);
   return nerrors;
 }
 
