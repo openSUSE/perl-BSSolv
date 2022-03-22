@@ -1465,7 +1465,7 @@ expander_check_native(ExpanderCtx *xpctx, Id p, Id dep)
     {
       if (xp->debug)
         expander_dbg(xp, "set %s to native because of %s [foreign]\n", pool_dep2str(pool, dep), expander_solvid2name(xp, p));
-      queue_push(xpctx->native, dep);
+      queue_pushunique(xpctx->native, dep);
       return 1;
     }
   if (!strcmp(multiarch, "allowed"))
@@ -2234,6 +2234,9 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
       expander_add_toinstall(&xpctx, &toinstall, q, id, 0);
     }
 
+  if (xpctx.native)
+    queue_push(xpctx.native, expander_directdepsend);
+
   /* unify toinstall, check against conflicts */
   for (i = 0; i < toinstall.count; i++)
     {
@@ -2657,6 +2660,8 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	}
     }
   queue_free(&xpctx.errors);
+  if (xpctx.native && xpctx.native->count && xpctx.native->elements[xpctx.native->count - 1] == expander_directdepsend)
+    queue_pop(xpctx.native);
   return nerrors;
 }
 
@@ -7947,6 +7952,8 @@ expand(BSSolv::expander xp, ...)
 		    for (i = 0; i < native.count; i++)
 		      {
 			const char *str = pool_dep2str(pool, native.elements[i]);
+			if (native.elements[i] == expander_directdepsend)
+			  str = "--directdepsend--";
 		        av_push(nativeav, newSVpv(str, 0));
 		      }
 		  }
