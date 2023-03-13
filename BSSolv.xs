@@ -59,6 +59,10 @@
 #define EXPANDER_OPTION_USERECOMMENDSFORCHOICES		(1 << 4)
 #define EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES	(1 << 5)
 
+#define KIWIPRODUCTCHECK_NODBG		(1 << 0)
+#define KIWIPRODUCTCHECK_NOSRC		(1 << 1)
+#define KIWIPRODUCTCHECK_ALLPKGS	(1 << 2)
+
 typedef struct _Expander {
   Pool *pool;
 
@@ -6367,6 +6371,123 @@ obscpioinstr(const char *file, const char *store = 0)
 		    close(fdstore);
 	    }
 	}
+
+int
+kiwiproductcheck(HV *fns_hv, int mode, HV *unneeded_na_hv, HV *deps_hv, SV *seen_fn_sv, SV *archs_sv)
+    CODE:
+	{
+	    HV *seen_fn_hv = 0;
+	    HV *archs_hv = 0;
+	    HE *entry;
+	    char fnbuf[1024];
+
+	    if (seen_fn_sv && SvOK(seen_fn_sv)) {
+		if (!SvROK(seen_fn_sv) || SvTYPE(SvRV(seen_fn_sv)) != SVt_PVHV)
+		    croak("kiwiproductcheck: seen_fn is not a hash reference\n");
+		seen_fn_hv = (HV*)SvRV(seen_fn_sv);
+	    }
+	    if (archs_sv && SvOK(archs_sv)) {
+		if (!SvROK(archs_sv) || SvTYPE(SvRV(archs_sv)) != SVt_PVHV)
+		    croak("kiwiproductcheck: archs is not a hash reference\n");
+		archs_hv = (HV*)SvRV(archs_sv);
+	    }
+	    fnbuf[0] = '-';
+	    hv_iterinit(fns_hv);
+	    RETVAL = 0;
+	    while ((entry = hv_iternext(fns_hv))) {
+		I32 fnlen, importlen;
+		char *fn = hv_iterkey(entry, &fnlen);
+		char *arch;
+		size_t archlen;
+		char *name, *ne;
+		size_t namelen;
+		SV *one_sv;
+
+		if ((U32)fnlen > 0x1000000)	/* what? */
+		    continue;
+		if (fnlen < 6)
+		    continue;
+		if (memcmp(fn + fnlen - 4, ".rpm", 4) != 0)
+		    continue;	/* not a rpm */
+		fnlen -= 4;
+		if (fn[fnlen - 1] == 'c') {
+		    if (fnlen > 4 && !memcmp(fn + fnlen - 4, ".src", 4))
+			continue;	/* ignore src rpms */
+		    if (fnlen > 6 && !memcmp(fn + fnlen - 6, ".nosrc", 6))
+			continue;	/* ignore nosrc rpms */
+		}
+		importlen = 0;
+		if (fnlen > 10 && !memcmp(fn, "::import::", 10) && fn[10] != ':') {
+		    char *ie = memchr(fn + 10, ':', fnlen - 10);
+		    if (ie && ie != fn + fnlen - 1 && ie[1] == ':') {
+			if (archs_hv && hv_exists(archs_hv, fn + 10, ie - (fn + 10)))
+			    continue;	/* import arch is in archs hash, ignore */
+			ie += 2;
+			importlen = ie - fn;
+			fnlen -= importlen;
+			fn = ie;
+		    }
+		}
+		if (fnlen < 2)
+		    continue;
+		if ((arch = memrchr(fn, '.', fnlen)) == 0)
+		    continue;
+		arch++;
+		archlen = (fn + fnlen) - arch;
+		ne = memrchr(fn, '-', arch - 1 - fn);	/* find start of release */
+		if (!ne)
+		    continue;
+		ne = memrchr(fn, '-', ne - 1 - fn);	/* find start of version */
+		if (!ne)
+		    continue;
+		name = fn;
+		namelen = (ne - fn);
+		if (!namelen || !archlen || namelen + archlen + 3 > sizeof(fnbuf))
+		    continue;
+		memcpy(fnbuf + 1, name, namelen);
+		fnbuf[1 + namelen] = '-';	/* use name-arch for debug test */
+		memcpy(fnbuf + 1 + namelen + 1, arch, archlen);
+		fnbuf[1 + namelen + 1 + archlen] = 0;
+		ne = fnbuf;
+		while ((ne = strchr(ne + 1, '-')) != 0) {
+		    if (ne[1] != 'd' && ne[1] != 'e')
+			continue;
+		    if (memcmp(ne + 1, "debuginfo-", 10) == 0 || memcmp(ne + 1, "debugsource-", 12) == 0)
+			break;
+		}
+		fnbuf[1 + namelen] = '.';	/* make it name.arch */
+		if (ne) {
+		    /* this is a debug package */
+		    if ((mode & KIWIPRODUCTCHECK_NODBG) != 0)
+			continue;
+		    if (!hv_exists(deps_hv, fnbuf + 1, namelen))
+			continue;					/* skip if not in deps hash */
+		}
+		if (hv_exists(unneeded_na_hv, fnbuf + 1, namelen + 1 + archlen))
+		    continue;						/* skip if in unneeded_na hash */
+		if (seen_fn_hv && hv_exists(seen_fn_hv, fn, fnlen))
+		    continue;						/* skip if in seen_fn */
+		if (importlen && seen_fn_hv && hv_exists(seen_fn_hv, fn - importlen, fnlen + importlen))
+		    continue;						/* skip if in seen_fn */
+		if ((mode & KIWIPRODUCTCHECK_ALLPKGS) != 0) {
+		    if (!hv_exists(deps_hv, fnbuf, namelen + 1)) {
+			RETVAL = 1;
+			break;
+		    }
+		} else {
+		    if (hv_exists(deps_hv, fnbuf + 1, namelen)) {
+			RETVAL = 1;
+			break;
+		    }
+		}
+		/* add new entry into unneeded_na so that we do not need to check deps_hv in the future */
+		one_sv = newSViv(1);
+		hv_store(unneeded_na_hv, fnbuf + 1, namelen + 1 + archlen, one_sv, 0);
+	    }
+	}
+    OUTPUT:
+	RETVAL
+
 
 
 MODULE = BSSolv		PACKAGE = BSSolv::pool		PREFIX = pool
