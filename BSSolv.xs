@@ -3340,9 +3340,9 @@ orderpackids_cmp(const void *ap, const void *bp)
 
   /* compare incident */
   if (ea->incident > eb->incident)
-    return 1;
-  if (ea->incident < eb->incident)
     return -1;
+  if (ea->incident < eb->incident)
+    return 1;
 
   return strcmp(na, nb);
 }
@@ -3365,9 +3365,9 @@ orderpackids_cmp_maint(const void *ap, const void *bp)
 
   /* compare incident */
   if (ea->incident > eb->incident)
-    return 1;
-  if (ea->incident < eb->incident)
     return -1;
+  if (ea->incident < eb->incident)
+    return 1;
 
   /* compare name */
   l = ea->namelen > eb->namelen ? eb->namelen : ea->namelen;
