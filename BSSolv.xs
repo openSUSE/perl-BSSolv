@@ -6465,9 +6465,9 @@ kiwiproductcheck(HV *fns_hv, int mode, HV *unneeded_na_hv, HV *deps_hv, SV *seen
 		}
 		if (hv_exists(unneeded_na_hv, fnbuf + 1, namelen + 1 + archlen))
 		    continue;						/* skip if in unneeded_na hash */
-		if (seen_fn_hv && hv_exists(seen_fn_hv, fn, fnlen))
+		if (seen_fn_hv && hv_exists(seen_fn_hv, fn, fnlen + 4))	/* +4 to get the .rpm back */
 		    continue;						/* skip if in seen_fn */
-		if (importlen && seen_fn_hv && hv_exists(seen_fn_hv, fn - importlen, fnlen + importlen))
+		if (importlen && seen_fn_hv && hv_exists(seen_fn_hv, fn - importlen, importlen + fnlen + 4))
 		    continue;						/* skip if in seen_fn */
 		if ((mode & KIWIPRODUCTCHECK_ALLPKGS) != 0) {
 		    if (!hv_exists(deps_hv, fnbuf, namelen + 1)) {
