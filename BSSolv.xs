@@ -63,6 +63,8 @@
 #define KIWIPRODUCTCHECK_NOSRC		(1 << 1)
 #define KIWIPRODUCTCHECK_ALLPKGS	(1 << 2)
 
+#define ORDERPACKIDS_ISMAINT		(1 << 0)
+
 typedef struct _Expander {
   Pool *pool;
 
@@ -3291,6 +3293,106 @@ subpack_sort_cmp(const void *ap, const void *bp, void *dp)
   return r ? r : a[0] - b[0];
 }
 
+struct orderpackids_ent {
+    SV *sv;
+    char *name;
+    char *flavor;
+    int namelen;
+    long long incident;
+};
+
+static int
+orderpackids_cmp(const void *ap, const void *bp)
+{
+  struct orderpackids_ent *ea = (struct orderpackids_ent *)ap;
+  struct orderpackids_ent *eb = (struct orderpackids_ent *)bp;
+  char *na = ea->name;
+  char *nb = eb->name;
+  int l, r;
+
+  /* put _volatile to back */
+  if (na[0] == '_' && !strcmp(na, "_volatile")) {
+    return nb[0] == '_' && !strcmp(nb, "_volatile") ? 0 : 1;
+  }
+  if (nb[0] == '_' && !strcmp(nb, "_volatile"))
+    return -1;
+
+  /* compare name */
+  l = ea->namelen > eb->namelen ? eb->namelen : ea->namelen;
+  r = strncmp(na, nb, l);
+  if (r)
+    return r;
+  if (ea->namelen > l)
+    return 1;
+  if (eb->namelen > l)
+    return -1;
+
+  /* compare flavor */
+  if (ea->flavor) {
+    if (!eb->flavor)
+      return 1;
+    r = strcmp(ea->flavor, eb->flavor);
+    if (r)
+      return r;
+  } else if (eb->flavor) {
+    return -1;
+  }
+
+  /* compare incident */
+  if (ea->incident > eb->incident)
+    return 1;
+  if (ea->incident < eb->incident)
+    return -1;
+
+  return strcmp(na, nb);
+}
+
+static int
+orderpackids_cmp_maint(const void *ap, const void *bp)
+{
+  struct orderpackids_ent *ea = (struct orderpackids_ent *)ap;
+  struct orderpackids_ent *eb = (struct orderpackids_ent *)bp;
+  char *na = ea->name;
+  char *nb = eb->name;
+  int l, r;
+
+  /* put _volatile to back */
+  if (na[0] == '_' && !strcmp(na, "_volatile")) {
+    return nb[0] == '_' && !strcmp(nb, "_volatile") ? 0 : 1;
+  }
+  if (nb[0] == '_' && !strcmp(nb, "_volatile"))
+    return -1;
+
+  /* compare incident */
+  if (ea->incident > eb->incident)
+    return 1;
+  if (ea->incident < eb->incident)
+    return -1;
+
+  /* compare name */
+  l = ea->namelen > eb->namelen ? eb->namelen : ea->namelen;
+  r = strncmp(na, nb, l);
+  if (r)
+    return r;
+  if (ea->namelen > l)
+    return 1;
+  if (eb->namelen > l)
+    return -1;
+
+  /* compare flavor */
+  if (ea->flavor) {
+    if (!eb->flavor)
+      return 1;
+    r = strcmp(ea->flavor, eb->flavor);
+    if (r)
+      return r;
+  } else if (eb->flavor) {
+    return -1;
+  }
+
+  return strcmp(na, nb);
+}
+
 /* This is an OpenSSL-compatible implementation of the RSA Data Security,
  * Inc. MD5 Message-Digest Algorithm.
  *
@@ -6488,6 +6590,59 @@ kiwiproductcheck(HV *fns_hv, int mode, HV *unneeded_na_hv, HV *deps_hv, SV *seen
     OUTPUT:
 	RETVAL
 
+void
+orderpackids(int mode, ...)
+    PPCODE:
+	{
+	    struct orderpackids_ent *ents;
+	    int i, nents = items - 1;
+	    ents = calloc(sizeof(*ents), nents);
+	    if (!ents)
+		croak("orderpackids: out of memory\n");
+	    for (i = 0; i < nents; i++) {
+		char *name, *n;
+		ents[i].sv = ST(i + 1);
+		ents[i].name = name = SvPV_nolen(ents[i].sv);
+		n = strrchr(name, ':');
+		if (n && name[0] == '_' && ((n - name == 8 && !strncmp(name, "_product", 8)) || (n - name == 10 && !strncmp(name, "_patchinfo", 10))))
+		    n = 0;
+		ents[i].flavor = n ? n + 1 : 0;
+		if (!n)
+		    n = name + strlen(name);
+		ents[i].namelen = n - name;
+		ents[i].incident = 99999999999999LL;
+		if (n != name && n[-1] >= '0' && n[-1] <= '9') {
+		    int n2 = n - name - 1;
+		    while (n2 && name[n2 - 1] >= '0' && name[n2 - 1] <= '9')
+			n2--;
+		    if (n2 && name[n2 - 1] == '.') {
+			ents[i].incident = strtoull(name + n2, NULL, 10);
+			ents[i].namelen = n2 - 1;
+		    } else {
+			char *ip = name;
+			while ((ip = strchr(ip, '.')) != 0) {
+			    ip++;
+			    if (!strncmp(ip, "imported_", 9)) {
+				ents[i].namelen = ip - 1 - name;
+				ents[i].incident = strtoull(name + n2, NULL, 10) - 1000000;
+				break;
+			    }
+			}
+		    }
+		}
+		/* fprintf(stderr, "orderpackids: %s  len %d flavor %s incident %lld\n", ents[i].name, ents[i].namelen, ents[i].flavor ? ents[i].flavor : "NULL", ents[i].incident); */
+	    }
+	    if (nents > 1) {
+		if ((mode & ORDERPACKIDS_ISMAINT) != 0)
+		    qsort(ents, nents, sizeof(*ents), orderpackids_cmp_maint);
+		else
+		    qsort(ents, nents, sizeof(*ents), orderpackids_cmp);
+	    }
+	    for (i = 0; i < nents; i++)
+		ST(i) = ents[i].sv;
+	    free(ents);
+	    XSRETURN(nents);
+	}
 
 
 MODULE = BSSolv		PACKAGE = BSSolv::pool		PREFIX = pool
