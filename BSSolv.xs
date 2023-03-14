@@ -6628,7 +6628,7 @@ orderpackids(int mode, ...)
 			    ip++;
 			    if (!strncmp(ip, "imported_", 9)) {
 				ents[i].namelen = ip - 1 - name;
-				ents[i].incident = strtoull(name + n2, NULL, 10) - 1000000;
+				ents[i].incident = strtoull(name + n2, NULL, 10) - 1000000LL;
 				break;
 			    }
 			}
