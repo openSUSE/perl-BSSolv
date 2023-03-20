@@ -29,7 +29,7 @@ is_deeply(\@r, [1, 'a', 'b', 'c'], 'honoured file requires');
 
 $config = setuptest($repo, "ExpandFlags: keepfilerequires");
 @r = expand($config, 'a');
-is_deeply(\@r, [undef, 'nothing provides /file needed by b'], 'missing file provides');
+is_deeply(\@r, [undef, 'nothing provides /file needed by b (missing FileProvides?)'], 'missing file provides');
 
 $config = setuptest($repo, "ExpandFlags: keepfilerequires\nFileProvides: /file c");
 @r = expand($config, 'a');
@@ -47,7 +47,7 @@ $config = setuptest($repo, "ExpandFlags: dorecommends keepfilerequires");
 @r = expand($config, 'd');
 # This should rather just ignore b
 # is_deeply(\@r, [1, 'd'], 'missing file provides');
-is_deeply(\@r, [undef, 'nothing provides /file needed by b'], 'missing file provides');
+is_deeply(\@r, [undef, 'nothing provides /file needed by b (missing FileProvides?)'], 'missing file provides');
 
 $config = setuptest($repo, "ExpandFlags: dorecommends keepfilerequires\nFileProvides: /file c");
 @r = expand($config, 'd');
@@ -65,7 +65,7 @@ $config = setuptest($repo, "ExpandFlags: dosupplements keepfilerequires");
 @r = expand($config, 'e');
 # This should rather just ignore b
 # is_deeply(\@r, [1, 'e'], 'missing file provides');
-is_deeply(\@r, [undef, 'nothing provides /file needed by b'], 'missing file provides');
+is_deeply(\@r, [undef, 'nothing provides /file needed by b (missing FileProvides?)'], 'missing file provides');
 
 $config = setuptest($repo, "ExpandFlags: dosupplements keepfilerequires\nFileProvides: /file c");
 @r = expand($config, 'e');

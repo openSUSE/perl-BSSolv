@@ -8125,10 +8125,12 @@ expand(BSSolv::expander xp, ...)
 		      {
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
+			const char *idstr = pool_dep2str(pool, id);
+			const char *fileprovmsg = idstr[0] == '/' ? " (missing FileProvides?)" : "";
 			if (who)
-		          sv = newSVpvf("nothing provides %s needed by %s", pool_dep2str(pool, id), solvid2name(pool, who));
+		          sv = newSVpvf("nothing provides %s needed by %s%s", idstr, solvid2name(pool, who), fileprovmsg);
 			else
-		          sv = newSVpvf("nothing provides %s", pool_dep2str(pool, id));
+		          sv = newSVpvf("nothing provides %s%s", idstr, fileprovmsg);
 			i += 3;
 		      }
 		    else if (type == ERROR_ALLCONFLICT)
