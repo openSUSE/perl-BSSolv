@@ -24,6 +24,9 @@ sub read_config {
       push @{$config->{substr($l0, 0, -1)}}, @l;
     } elsif ($l0 eq 'binarytype:') {
       $config->{'binarytype'} = $l[0];
+    } elsif ($l0 eq 'fileprovides:') {
+      my $f = shift @l;
+      push @{$config->{'fileprovides'}->{$f}}, @l;
     } elsif ($l0 !~ /^[#%]/) {
       die("unknown keyword in config: $l0\n");
     }
