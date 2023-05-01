@@ -207,8 +207,6 @@ makeevr(Pool *pool, char *e, char *v, char *r)
 
   if (!v)
     return 0;
-  if (e && !strcmp(e, "0"))
-    e = 0;
   if (e)
     s = pool_tmpjoin(pool, e, ":", v);
   else
