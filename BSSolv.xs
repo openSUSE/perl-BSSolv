@@ -219,7 +219,7 @@ makeevr(Pool *pool, char *e, char *v, char *r)
 }
 
 static inline char *
-avlookupstr(AV *av, int n)
+avlookupstr(AV *av, SSize_t n)
 {
   SV **svp = av_fetch(av, n, 0);
   if (!svp)
@@ -3149,6 +3149,31 @@ static int metacmp(const void *ap, const void *bp)
   if (r)
     return r;
   return a - b;
+}
+
+static int metadepth(const char *m1, const char *m2)
+{
+    int n1 = 0;
+    int n2 = 0;
+    if (m1) {
+	n1 = 2;
+	while (*m1 && *m1 != '\n') {
+	    if (*m1++ == '/')
+		n1++;
+	}
+    }
+    if (m2) {
+	n2 = 2;
+	while (*m2 && *m2 != '\n') {
+	    if (*m2++ == '/')
+		n2++;
+	}
+    }
+    if (!n1)
+	return n2;
+    if (!n2)
+	return n1;
+    return n2 > n1 ? n1 : n2;
 }
 
 static char *
@@ -6165,6 +6190,80 @@ add_meta(AV *new_meta, SV *sv, const char *bin, const char *packid = 0)
 	    }
 	    free(buf);
 	}
+
+int
+diffdepth_meta(AV *av1, SV *sv2)
+    CODE:
+        SSize_t m1n;
+	m1n = av_len(av1) + 1;
+	RETVAL = 1;
+	if (SvROK(sv2) && SvTYPE(SvRV(sv2)) == SVt_PVAV) {
+	    AV *av2 = (AV *)SvRV(sv2);
+	    SSize_t i, m2n = av_len(av2) + 1;
+	    if (!m2n) {
+		RETVAL = m1n ? 1 : 0;
+	    } else if (m1n) {
+		for (i = 0; ; i++) {
+		    char *l1 = 0, *l2 = 0;
+		    if (i < m1n) {
+			l1 = avlookupstr(av1, i);
+			if (!l1 || !*l1) {
+			    croak("diffdepth_meta: illegal entry in meta array\n");
+			    XSRETURN_UNDEF;
+			}
+		    }
+		    if (i < m2n) {
+			l2 = avlookupstr(av2, i);
+			if (!l2 || !*l2) {
+			    croak("diffdepth_meta: illegal entry in meta array\n");
+			    XSRETURN_UNDEF;
+			}
+		    }
+		    if (!l1 || !l2 || strcmp(l1, l2)) {
+			RETVAL = i ? metadepth(l1, l2) : (l1 || l2  ? 1 : 0);
+			break;
+		    }
+		}
+	    }
+	} else {
+	    char *m2;
+	    STRLEN m2l;
+	    if (!SvPOK(sv2)) {
+		croak("diffdepth_meta: 2nd argument is not a string or an array ref\n");
+		XSRETURN_UNDEF;
+	    }
+	    m2 = (char *)SvPV(sv2, m2l);
+	    if (!m2l) {
+		RETVAL = m1n ? 1 : 0;
+	    } else if (m1n) {
+		SSize_t i;
+		for (i = 0; ; i++) {
+		    char *l1 = 0, *l2 = 0;
+		    size_t l1n = 0;
+		    if (i < m1n) {
+			l1 = avlookupstr(av1, i);
+			if (!l1 || !*l1) {
+			    croak("diffdepth_meta: illegal entry in meta array\n");
+			    XSRETURN_UNDEF;
+			}
+			l1n = strlen(l1);
+		    }
+		    if (*m2) {
+			l2 = m2;
+		    }
+		    if (!l1 || !l2 || strncmp(l1, l2, l1n) || (l2[l1n] != 0 && l2[l1n] != '\n')) {
+			RETVAL = i ? metadepth(l1, l2) : (l1 || l2 ? 1 : 0);
+			break;
+		    }
+		    m2 += l1n;
+		    if (*m2)
+			m2++;
+		}
+	    }
+	}
+
+    OUTPUT:
+	RETVAL
 
 SV *
 thawcache(SV *sv)
