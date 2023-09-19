@@ -3810,7 +3810,7 @@ struct deltaout {
 static inline unsigned long long getu48(unsigned char *d)
 {
   unsigned long long x = d[0] << 8 | d[1];
-  return (x << 32) | (d[2] << 24 | d[3] << 16 | d[4] << 8 | d[5]);
+  return (x << 32) | (unsigned int)(d[2] << 24 | d[3] << 16 | d[4] << 8 | d[5]);
 }
 
 static inline void putu48(unsigned char *d, unsigned long long x)
