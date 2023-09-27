@@ -58,6 +58,13 @@
 #define EXPANDER_OPTION_DOSUPPLEMENTS			(1 << 3)
 #define EXPANDER_OPTION_USERECOMMENDSFORCHOICES		(1 << 4)
 #define EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES	(1 << 5)
+#define EXPANDER_OPTION_KEEPFILEREQUIRES		(1 << 6)
+
+#define KIWIPRODUCTCHECK_NODBG		(1 << 0)
+#define KIWIPRODUCTCHECK_NOSRC		(1 << 1)
+#define KIWIPRODUCTCHECK_ALLPKGS	(1 << 2)
+
+#define ORDERPACKIDS_ISMAINT		(1 << 0)
 
 typedef struct _Expander {
   Pool *pool;
@@ -90,12 +97,14 @@ typedef struct _Expander {
   int usesupplementsforchoices;
   int dorecommends;
   int dosupplements;
+  int keepfilerequires;
 } Expander;
 
 typedef struct _ExpanderCtx {
   Pool *pool;
   Expander *xp;
   Queue *out;			/* the result */
+  Queue *native;		/* native dependencies found */
   Map installed;		/* installed packages */
   Map conflicts;		/* conflicts from installed packages */
   Queue conflictsinfo;		/* source info for the above */
@@ -117,6 +126,7 @@ typedef struct _ExpanderCtx {
   int usesupplementsforchoices;
   int dorecommends;
   int dosupplements;
+  int keepfilerequires;
 
   /* hacks */
   Solvable *ignore_s;		/* small hack: ignore requires of this solvable */
@@ -131,11 +141,14 @@ static Id buildservice_id;
 static Id buildservice_repocookie;
 static Id buildservice_external;
 static Id buildservice_dodurl;
-static Id expander_directdepsend;
 static Id buildservice_dodcookie;
+static Id buildservice_dodresources;
 static Id buildservice_annotation;
+static Id buildservice_modules;
+static Id expander_directdepsend;
 
 static int genmetaalgo;
+static int depsortsccs;
 
 /* make sure bit n is usable */
 #define MAPEXP(m, n) ((m)->size < (((n) + 8) >> 3) ? map_grow(m, n + 256) : 0)
@@ -206,7 +219,7 @@ makeevr(Pool *pool, char *e, char *v, char *r)
 }
 
 static inline char *
-avlookupstr(AV *av, int n)
+avlookupstr(AV *av, SSize_t n)
 {
   SV **svp = av_fetch(av, n, 0);
   if (!svp)
@@ -320,7 +333,7 @@ static Offset
 importdeps(HV *hv, const char *key, int keyl, Repo *repo)
 {
   Pool *pool = repo->pool;
-  int i;
+  SSize_t i;
   AV *av = hvlookupav(hv, key, keyl);
   Offset off = 0;
   if (av)
@@ -373,12 +386,13 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
 }
 
 static int
-data2pkg(Repo *repo, Repodata *data, HV *hv)
+data2pkg(Repo *repo, Repodata *data, HV *hv, int isdod)
 {
   Pool *pool = repo->pool;
   char *str;
   Id p;
   Solvable *s;
+  AV *av;
 
   str = hvlookupstr(hv, "name", 4);
   if (!str)
@@ -405,15 +419,33 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
 	ss = str;
       repodata_set_str(data, p, SOLVABLE_MEDIAFILE, ss);
     }
-  str = hvlookupstr(hv, "id", 2);
-  if (str)
-    repodata_set_str(data, p, buildservice_id, str);
+  if (isdod)
+    repodata_set_str(data, p, buildservice_id, "dod");
+  else
+    {
+      str = hvlookupstr(hv, "id", 2);
+      if (str)
+	repodata_set_str(data, p, buildservice_id, str);
+    }
   str = hvlookupstr(hv, "source", 6);
   if (str)
     repodata_set_poolstr(data, p, SOLVABLE_SOURCENAME, str);
-  str = hvlookupstr(hv, "hdrmd5", 6);
-  if (str && strlen(str) == 32)
-    repodata_set_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, str);
+#if LIBSOLV_VERSION >= 722
+  str = hvlookupstr(hv, "multiarch", 9);
+  if (str)
+    repodata_set_poolstr(data, p, SOLVABLE_MULTIARCH, str);
+#endif
+  if (isdod)
+    {
+      static unsigned char dod_pkgid[16] = { 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0, 0xd0 };
+      repodata_set_bin_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, dod_pkgid);
+    }
+  else
+    {
+      str = hvlookupstr(hv, "hdrmd5", 6);
+      if (str && strlen(str) == 32)
+	repodata_set_checksum(data, p, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, str);
+    }
   s->provides    = importdeps(hv, "provides", 8, repo);
   s->obsoletes   = importdeps(hv, "obsoletes", 9, repo);
   s->conflicts   = importdeps(hv, "conflicts", 9, repo);
@@ -436,7 +468,7 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
 	    s->evr = rd->evr;
 	}
     }
-  if (s->evr)
+  if (s->evr && s->arch != ARCH_SRC && s->arch != ARCH_NOSRC)
     s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
   str = hvlookupstr(hv, "checksum", 8);
   if (str)
@@ -455,17 +487,27 @@ data2pkg(Repo *repo, Repodata *data, HV *hv)
   str = hvlookupstr(hv, "annotation", 10);
   if (str && strlen(str) < 100000)
     repodata_set_str(data, p, buildservice_annotation, str);
+  av = hvlookupav(hv, "modules", 7);
+  if (av)
+    {
+      SSize_t i;
+      for (i = 0; i <= av_len(av); i++)
+	{
+	  char *str = avlookupstr(av, i);
+	  repodata_add_idarray(data, p, buildservice_modules, pool_str2id(pool, str, 1));
+	}
+    }
   return p;
 }
 
 static void
-data2solvables(Repo *repo, Repodata *data, SV *rsv)
+data2solvables(Repo *repo, Repodata *data, SV *rsv, int isdod)
 {
   AV *rav = 0;
   SSize_t ravi = 0;
   HV *rhv = 0;
   SV *sv;
-  char *str, *key;
+  char *key;
   I32 keyl;
 
   if (SvTYPE(rsv) == SVt_PVAV)
@@ -495,17 +537,32 @@ data2solvables(Repo *repo, Repodata *data, SV *rsv)
 	}
       if (!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVHV)
 	continue;
-      data2pkg(repo, data, (HV *)SvRV(sv));
+      data2pkg(repo, data, (HV *)SvRV(sv), isdod);
     }
 
   /* set meta information */
   repodata_set_str(data, SOLVID_META, buildservice_repocookie, REPOCOOKIE);
-  str = hvlookupstr(rhv, "/url", 4);
-  if (str)
-    repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
-  str = hvlookupstr(rhv, "/dodcookie", 10);
-  if (str)
-    repodata_set_str(data, SOLVID_META, buildservice_dodcookie, str);
+  if (rhv)
+    {
+      char *str;
+      AV *av;
+      str = hvlookupstr(rhv, "/url", 4);
+      if (str)
+	repodata_set_str(data, SOLVID_META, buildservice_dodurl, str);
+      str = hvlookupstr(rhv, "/dodcookie", 10);
+      if (str)
+	repodata_set_str(data, SOLVID_META, buildservice_dodcookie, str);
+      av = hvlookupav(rhv, "/dodresources", 13);
+      if (av)
+	{
+	  SSize_t i;
+	  for (i = 0; i <= av_len(av); i++)
+	    {
+	      Id id = pool_str2id(repo->pool, avlookupstr(av, i), 1);
+	      repodata_add_idarray(data, SOLVID_META, buildservice_dodresources, id);
+	    }
+	}
+    }
 }
 
 static SV *
@@ -952,6 +1009,7 @@ normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
 #define ERROR_CONFLICT			7
 #define ERROR_CONFLICT2			8
 #define ERROR_ALLCONFLICT		9
+#define ERROR_NOPROVIDERINFO		10
 
 static void
 expander_dbg(Expander *xp, const char *format, ...)
@@ -1007,6 +1065,19 @@ expander_solvid2name(Expander *xp, Id p)
   return pool_tmpjoin(xp->pool, n, "@", r->name);
 }
 
+static const char *
+expander_solvid2str(Expander *xp, Id p)
+{
+  const char *n = pool_solvid2str(xp->pool, p);
+  Repo *r; 
+  if (!xp->debug)
+    return n;
+  r = xp->pool->solvables[p].repo;
+  if (!r) 
+    return n;
+  return pool_tmpjoin(xp->pool, n, "@", r->name);
+}
+
 static int
 pkgname_sort_cmp(const void *ap, const void *bp, void *dp)
 {
@@ -1022,7 +1093,6 @@ expander_isignored(Expander *xp, Solvable *s, Id req)
   Pool *pool = xp->pool;
   Id id = id2name(pool, req);
   const char *n;
-
   if (!xp->ignoreignore)
     {
       if (MAPTST(&xp->ignored, id))
@@ -1043,7 +1113,7 @@ expander_isignored(Expander *xp, Solvable *s, Id req)
     }
   if (*n == '/')
     {
-      if (!xp->havefileprovides || pool->whatprovides[id] <= 1)
+      if (!xp->keepfilerequires && (!xp->havefileprovides || pool->whatprovides[id] <= 1))
 	{
 	  MAPEXP(&xp->ignored, id);
 	  MAPSET(&xp->ignored, id);
@@ -1124,6 +1194,13 @@ expander_check_cplxblock(ExpanderCtx *xpctx, Id p, Id dep, int deptype, Id *ptr,
 	    {
 	      if (p == -pp)
 		continue;	/* ignore redundant self-entry */
+	      if (deptype == DEPTYPE_REQUIRES)
+		{
+		  /* do not report a requires as conflicts */
+		  queue_push(&xpctx->errors, ERROR_NOPROVIDER);
+		  queue_push2(&xpctx->errors, dep, p);
+		  break;
+		}
 	      queue_push(&xpctx->errors, ERROR_CONFLICT);
 	      queue_push2(&xpctx->errors, p, -pp);
 	    }
@@ -1380,6 +1457,39 @@ recheck_conddeps(ExpanderCtx *xpctx)
     }
 }
 
+static int
+expander_check_native(ExpanderCtx *xpctx, Id p, Id dep)
+{
+#if LIBSOLV_VERSION >= 722
+  Pool *pool = xpctx->pool;
+  Expander *xp = xpctx->xp;
+  const char *multiarch;
+  if (!xpctx->native)
+    return 0;
+  multiarch = solvable_lookup_str(pool->solvables + p, SOLVABLE_MULTIARCH);
+  if (!multiarch)
+    return 0;
+  if (!strcmp(multiarch, "foreign"))
+    {
+      if (xp->debug)
+        expander_dbg(xp, "set %s to native because of %s [foreign]\n", pool_dep2str(pool, dep), expander_solvid2name(xp, p));
+      queue_pushunique(xpctx->native, dep);
+      return 1;
+    }
+  if (!strcmp(multiarch, "allowed"))
+    {
+      if (strstr(pool_dep2str(pool, dep), ":any"))	/* FIXME: do this right */
+	{
+          if (xp->debug)
+            expander_dbg(xp, "set %s to native because of %s [allowed]\n", pool_dep2str(pool, dep), expander_solvid2name(xp, p));
+	  queue_push(xpctx->native, dep);
+	  return 1;
+	}
+    }
+#endif
+  return 0;
+}
+
 /* install a single package */
 static void
 expander_installed(ExpanderCtx *xpctx, Id p)
@@ -1389,6 +1499,8 @@ expander_installed(ExpanderCtx *xpctx, Id p)
   Solvable *s = pool->solvables + p;
   Id req, *reqp, con, *conp;
 
+  if (!p)
+    return;
 #if 0
 printf("expander_installed %s\n", pool_solvid2str(pool, p));
 #endif
@@ -1528,7 +1640,7 @@ expander_installed_multiple(ExpanderCtx *xpctx, Queue *toinstall)
   for (i = j = 0; i < toinstall->count; i++)
     {
       Id p = toinstall->elements[i];
-      if (MAPTST(&xpctx->installed, p))
+      if (!p || MAPTST(&xpctx->installed, p))
 	continue;	/* already seen */
       MAPSET(&xpctx->installed, p);
       toinstall->elements[j++] = p;
@@ -1875,8 +1987,90 @@ str2id_dup(Pool *pool, const char *str)
   }
 }
 
+static void
+add_noproviderinfo(ExpanderCtx *xpctx, Id dep, Id who)
+{
+  Pool *pool = xpctx->pool;
+  Reldep *rd, *prd;
+  Id p, pp, prov, *provp;
+  int nprovinfo;
+
+  if (xpctx->xp->debug)
+    {
+      if (who)
+        expander_dbg(xpctx->xp, "nothing provides %s needed by %s\n", pool_dep2str(pool, dep), expander_solvid2str(xpctx->xp, who));
+      else
+        expander_dbg(xpctx->xp, "nothing provides %s\n", pool_dep2str(pool, dep));
+    }
+  if (!ISRELDEP(dep))
+    return;
+  rd = GETRELDEP(pool, dep);
+  if (rd->flags >= 8 || ISRELDEP(rd->name) || ISRELDEP(rd->evr))
+    return;
+  nprovinfo = 0;
+  FOR_PROVIDES(p, pp, rd->name)
+    {
+      Solvable *s = pool->solvables + p;
+      if (!s->repo || !s->provides)
+	continue;
+      for (provp = s->repo->idarraydata + s->provides; (prov = *provp++) != 0; )
+	{
+	  if (!ISRELDEP(prov))
+	    continue;
+	  prd = GETRELDEP(pool, prov);
+	  if (prd->name != rd->name || ISRELDEP(prd->evr))
+	    continue;
+	  queue_push(&xpctx->errors, ERROR_NOPROVIDERINFO);
+	  if (prd->name == s->name && prd->evr == s->evr)
+	    {
+	      if (xpctx->xp->debug)
+		expander_dbg(xpctx->xp, "%s has version %s\n", expander_solvid2str(xpctx->xp, p), pool_id2str(pool, prd->evr));
+	      queue_push2(&xpctx->errors, prd->evr, 0);
+	    }
+	  else
+	    {
+	      if (xpctx->xp->debug)
+		expander_dbg(xpctx->xp, "%s provides version %s\n", expander_solvid2str(xpctx->xp, p), pool_id2str(pool, prd->evr));
+	      queue_push2(&xpctx->errors, prd->evr, p);
+	    }
+	  if (++nprovinfo >= 4)
+	    return;		/* only show the first 4 providers */
+	}
+    }
+}
+
+#if LIBSOLV_VERSION >= 722
 static int
-expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignoreq, int options)
+pool_has_keyname(Pool *pool, Id keyname)
+{
+  Repo *repo;
+  Repodata *data;
+  int ridx, rdid;
+  FOR_REPOS(ridx, repo)
+    FOR_REPODATAS(repo, rdid, data)
+      if (repodata_has_keyname(data, keyname))
+        return 1;
+  return 0;
+}
+#endif
+
+static inline void
+expander_add_toinstall(ExpanderCtx *xpctx, Queue *toinstall, Id p, Id dep, Id whon)
+{
+  Expander *xp = xpctx->xp;
+  Pool *pool = xp->pool;
+  if (xpctx->native && expander_check_native(xpctx, p, dep))
+    {
+      queue_push(toinstall, 0);		/* mark progress */
+      return;
+    }
+  if (xp->debug)
+    expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, dep));
+  queue_push(toinstall, p);
+}
+
+static int
+expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignoreq, Queue *native, int options)
 {
   ExpanderCtx xpctx;
   Pool *pool = xp->pool;
@@ -1895,6 +2089,12 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   int ignoremapssaved = 0;
   int dorecstart = 0;
 
+#if LIBSOLV_VERSION >= 722
+  if (native && !pool_has_keyname(pool, SOLVABLE_MULTIARCH))
+    native = 0;
+#else
+  native = 0;
+#endif
   memset(&xpctx, 0, sizeof(xpctx));
   xpctx.xp = xp;
   xpctx.pool = pool;
@@ -1905,6 +2105,8 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   xpctx.usesupplementsforchoices = options & EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES ? 1 : xp->usesupplementsforchoices;
   xpctx.dorecommends = options & EXPANDER_OPTION_DORECOMMENDS ? 1 : xp->dorecommends;
   xpctx.dosupplements = options & EXPANDER_OPTION_DOSUPPLEMENTS ? 1 : xp->dosupplements;
+  xpctx.keepfilerequires = options & EXPANDER_OPTION_KEEPFILEREQUIRES ? 1 : xp->keepfilerequires;
+  xpctx.native = native;
   map_init(&xpctx.installed, pool->nsolvables);
   map_init(&xpctx.conflicts, 0);
   map_init(&xpctx.recommended, 0);
@@ -2036,10 +2238,13 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  queue_push2(&xpctx.todo, id, 0);	/* unclear, resolve later */
 	  continue;
 	}
-      if (xp->debug)
-	expander_dbg(xp, "added %s because of %s (direct dep)\n", expander_solvid2name(xp, q), pool_dep2str(pool, id));
-      queue_push(&toinstall, q);
+      if (xpctx.native && expander_check_native(&xpctx, q, id))
+	continue;
+      expander_add_toinstall(&xpctx, &toinstall, q, id, 0);
     }
+
+  if (xpctx.native)
+    queue_push(xpctx.native, expander_directdepsend);
 
   /* unify toinstall, check against conflicts */
   for (i = 0; i < toinstall.count; i++)
@@ -2163,6 +2368,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 		continue;
 	      queue_push(&xpctx.errors, ERROR_NOPROVIDER);
 	      queue_push2(&xpctx.errors, id, who);
+	      add_noproviderinfo(&xpctx, id, who);
 	      continue;
 	    }
 
@@ -2256,9 +2462,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
           if (qq.count == 1)
 	    {
 	      p = qq.elements[0];
-	      if (xp->debug)
-		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-	      queue_push(&toinstall, p);
+	      expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 	      continue;
 	    }
 	  /* pass is == 1 and we have multiple choices */
@@ -2307,9 +2511,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  if (qn == 1)
 	    {
 	      p = qe[0];
-	      if (xp->debug)
-		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-	      queue_push(&toinstall, p);
+	      expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 	      xpctx.todo.elements[ti] = 0;	/* kill entry */
 	    }
 	  choices.elements[tc + 2] = qn;
@@ -2336,9 +2538,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  if (qn == 1)
 	    {
 	      p = qe[0];
-	      if (xp->debug)
-		expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-	      queue_push(&toinstall, p);
+	      expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 	      xpctx.todo.elements[ti] = 0;	/* kill entry */
 	    }
 	  choices.elements[tc + 2] = qn;
@@ -2368,9 +2568,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	      if (qn == 1)
 		{
 		  p = qe[0];
-		  if (xp->debug)
-		    expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-		  queue_push(&toinstall, p);
+		  expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 		  xpctx.todo.elements[ti] = 0;	/* kill entry */
 		}
 	      choices.elements[tc + 2] = qn;
@@ -2393,9 +2591,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	      if (qn == 1)
 		{
 		  p = qe[0];
-		  if (xp->debug)
-		    expander_dbg(xp, "added %s because of %s:%s\n", expander_solvid2name(xp, p), whon ? pool_id2str(pool, whon) : "(direct)", pool_dep2str(pool, id));
-		  queue_push(&toinstall, p);
+		  expander_add_toinstall(&xpctx, &toinstall, p, id, whon);
 		  xpctx.todo.elements[ti] = 0;	/* kill entry */
 		}
 	      choices.elements[tc + 2] = qn;
@@ -2419,6 +2615,28 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  queue_push(&xpctx.errors, 0);
 	  tc += choices.elements[tc];
 	}
+    }
+
+  /* postprocress native queue */
+  if (xpctx.native)
+    {
+      /* remove entries that are provided by an installed package */
+      for (i = j = 0; i < xpctx.native->count; i++)
+	{
+	  id = xpctx.native->elements[i];
+	  if (id != expander_directdepsend)
+	    {
+	      FOR_PROVIDES(p, pp, id)
+		if (MAPTST(&xpctx.installed, p))
+		  break;
+	      if (p)
+		continue;
+	    }
+	  xpctx.native->elements[j++] = id;
+	}
+      /* remove directdepsend indicator if it is the last element */
+      if (xpctx.native->count && xpctx.native->elements[xpctx.native->count - 1] == expander_directdepsend)
+	queue_pop(xpctx.native);
     }
 
   /* free data */
@@ -2494,6 +2712,7 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
   xp->usesupplementsforchoices = options & EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES ? 1 : 0;
   xp->dorecommends = options & EXPANDER_OPTION_DORECOMMENDS ? 1 : 0;
   xp->dosupplements = options & EXPANDER_OPTION_DOSUPPLEMENTS ? 1 : 0;
+  xp->keepfilerequires = options & EXPANDER_OPTION_KEEPFILEREQUIRES ? 1 : 0;
 
   queue_init(&xp->preferposq);
   for (i = 0; i < preferpos->count; i++)
@@ -2635,14 +2854,132 @@ set_disttype_from_location(Pool *pool, Solvable *so)
     disttype = DISTTYPE_DEB;
 #endif
 #ifdef DISTTYPE_ARCH
-  if (disttype < 0 && sl >= 11 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz")))
+  if (disttype < 0 && sl >= 12 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz") || !strcmp(s + sl - 12, ".pkg.tar.zst")))
     disttype = DISTTYPE_ARCH;
 #endif
   if (disttype >= 0 && pool->disttype != disttype)
     set_disttype(pool, disttype);
 }
 
+static inline const char *
+solvid2name(Pool *pool, Id p)
+{
+  return pool_id2str(pool, pool->solvables[p].name);
+}
+
 #define ISNOARCH(arch) (arch == ARCH_NOARCH || arch == ARCH_ALL || arch == ARCH_ANY)
+
+static int
+has_keyname(Repo *repo, Id keyname)
+{
+  Repodata *data;
+  int rdid;
+  FOR_REPODATAS(repo, rdid, data)
+    if (repodata_has_keyname(data, keyname))
+      return 1;
+  return 0;
+}
+
+static inline int
+match_modules_req(Pool *pool, Id id)
+{
+  const char *dep = pool_id2str(pool, id);
+  Id *modules;
+  if (strncmp(dep, "platform", 8) == 0 && (dep[8] == 0 || dep[8] == '-'))
+    return 1;
+  for (modules = pool->appdata; *modules; modules++)
+    {
+      const char *name, *rname;
+      if (*modules == id)
+	return 1;
+      name = pool_id2str(pool, *modules);
+      if ((rname = strrchr(name, '-')) == 0 || rname == name)
+	continue;
+      if (!strncmp(dep, name, rname - name) && dep[rname - name] == 0)
+	return 1;
+    }
+  return 0;
+}
+
+static void
+create_module_map(Repo *repo, Map *modulemap, Queue *modulemapq)
+{
+  Pool *pool = repo->pool;
+  Id *modules = pool->appdata;
+  int i, have_moduleinfo = 0;
+  Id id, p, *pp;
+  Solvable *s;
+
+  if (!modulemap->size)
+    map_grow(modulemap, pool->ss.nstrings);
+  if (!modules)
+    return;
+  if (!*modules)
+    {
+      map_setall(modulemap);
+      return;
+    }
+  /* clear old bits */
+  if (modulemapq->count)
+    {
+      for (i = 0; i < modulemapq->count; i++)
+	MAPCLR(modulemap, modulemapq->elements[i]);
+      queue_empty(modulemapq);
+    }
+  for (modules = pool->appdata; *modules; modules++)
+    MAPSET(modulemap, *modules);
+  /* look for module information stored in "buildservice:modules" solvables */
+  FOR_REPO_SOLVABLES(repo, p, s)
+    {
+      if (s->name != buildservice_modules || s->arch != ARCH_SRC)
+	continue;
+      have_moduleinfo = 1;
+      if (s->evr >= 1 && s->evr < pool->ss.nstrings && MAPTST(modulemap, s->evr))
+	{
+	  queue_push(modulemapq, s->evr);	/* directly addressed */
+	  continue;
+	}
+      id = s->repo->idarraydata[s->provides];
+      if (id < 1 || id >= pool->ss.nstrings || !MAPTST(modulemap, id))
+	continue;	/* not what we're looking for */
+      for (pp = s->repo->idarraydata + s->requires; (id = *pp) != 0; pp++)
+        {
+          /* check if the dep is fulfilled by any module in the list */
+          if (id < 1 || id >= pool->ss.nstrings)
+	    break;	/* hey! */
+          if (!MAPTST(modulemap, id) && !match_modules_req(pool, id))
+	    break;	/* could not fulfil requires */
+        }
+      if (id)
+	continue;	/* could not fulfil one of the requires, ignore module */
+      queue_push(modulemapq, s->evr);
+    }
+  if (!have_moduleinfo)
+    {
+      /* old style repo with no moduleinfo at all. simple use the unexpanded ids */
+      for (modules = pool->appdata; *modules; modules++)
+        queue_push(modulemapq, *modules);
+      return;
+    }
+  for (modules = pool->appdata; *modules; modules++)
+    MAPCLR(modulemap, *modules);
+  for (i = 0; i < modulemapq->count; i++)
+    MAPSET(modulemap, modulemapq->elements[i]);
+}
+
+static int
+in_module_map(Pool *pool, Map *modulemap, Queue *modules)
+{
+  int i;
+  for (i = 0; i < modules->count; i++)
+    { 
+      Id id = modules->elements[i];
+      if (id > 1 && id < pool->ss.nstrings && MAPTST(modulemap, id))
+	return 1;
+    }
+  return 0;
+}
+
 
 static void
 create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepos)
@@ -2653,34 +2990,68 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
   Repo *repo;
   int olddisttype = -1;
   int dodrepo;
+  int mayhave_modules;
+  Queue modules;
+  Map modulemap;
+  Queue modulemapq;
+  int modulemap_uptodate;
 
   map_init(considered, pool->nsolvables);
   best = solv_calloc(sizeof(Id), pool->ss.nstrings);
   
+  queue_init(&modules);
+  map_init(&modulemap, 0);
+  queue_init(&modulemapq);
   FOR_REPOS(ridx, repo)
     {
       if (repoonly && repo != repoonly)
 	continue;
       dodrepo = repo_lookup_str(repo, SOLVID_META, buildservice_dodurl) != 0;
+      mayhave_modules = has_keyname(repo, buildservice_modules) ? 1 : 0;
+      modulemap_uptodate = 0;
       FOR_REPO_SOLVABLES(repo, p, s)
 	{
+	  int inmodule = 0;
 	  if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
 	    continue;
 	  pb = best[s->name];
-	  if (unorderedrepos && pb && s->repo->priority != pool->solvables[pb].repo->priority)
+	  sb = pb ? pool->solvables + pb : 0;
+	  if (mayhave_modules)
 	    {
-	      if (s->repo->priority < pool->solvables[pb].repo->priority)
+	      solvable_lookup_idarray(s, buildservice_modules, &modules);
+	      inmodule = modules.count ? 1 : 0;
+	      if (inmodule)
+		{
+		  if (!modulemap_uptodate)
+		    {
+		      create_module_map(repo, &modulemap, &modulemapq);
+		      modulemap_uptodate = 1;
+		    }
+		  if (!in_module_map(pool, &modulemap, &modules))
+		    continue;		/* nope, ignore package */
+		}
+	    }
+	  if (unorderedrepos && sb && s->repo->priority != sb->repo->priority)
+	    {
+	      if (s->repo->priority < sb->repo->priority)
 		continue;	/* lower prio, ignore */
 	    }
-	  else if (pb)
+	  else if (sb)
 	    {
+	      int sbinmodule = 0;
 	      /* we already have that name. decide which one to take */
-	      sb = pool->solvables + pb;
 	      if (!unorderedrepos && s->repo != sb->repo)
 		continue;	/* first repo wins */
 
-	      /* take package if it has a higher version/arch */
-	      if (s->evr != sb->evr)
+	      if (s->repo == sb->repo && mayhave_modules)
+		sbinmodule = solvable_lookup_type(sb, buildservice_modules) ? 1 : 0;
+
+	      if (inmodule != sbinmodule)
+		{
+		  if (inmodule < sbinmodule)
+		    continue;
+		}
+	      else if (s->evr != sb->evr)
 		{
 		  /* check versions */
 		  int r;
@@ -2747,6 +3118,9 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
 	}
     }
   solv_free(best);
+  queue_free(&modules);
+  map_free(&modulemap);
+  queue_free(&modulemapq);
   if (olddisttype >= 0 && pool->disttype != olddisttype)
     set_disttype(pool, olddisttype);
 }
@@ -2775,6 +3149,31 @@ static int metacmp(const void *ap, const void *bp)
   if (r)
     return r;
   return a - b;
+}
+
+static int metadepth(const char *m1, const char *m2)
+{
+    int n1 = 0;
+    int n2 = 0;
+    if (m1) {
+	n1 = 2;
+	while (*m1 && *m1 != '\n') {
+	    if (*m1++ == '/')
+		n1++;
+	}
+    }
+    if (m2) {
+	n2 = 2;
+	while (*m2 && *m2 != '\n') {
+	    if (*m2++ == '/')
+		n2++;
+	}
+    }
+    if (!n1)
+	return n2;
+    if (!n2)
+	return n1;
+    return n2 > n1 ? n1 : n2;
 }
 
 static char *
@@ -2851,7 +3250,7 @@ repo_add_obsbinlnk(Repo *repo, const char *path, int flags)
       return 0;
     }
   data = repo_add_repodata(repo, flags);
-  p = data2pkg(repo, data, (HV *)sv);
+  p = data2pkg(repo, data, (HV *)sv, 0);
   SvREFCNT_dec(sv);
   if (!(flags & REPO_NO_INTERNALIZE))
     repodata_internalize(data);
@@ -2888,7 +3287,7 @@ repodata_addbin(Repodata *data, char *prefix, char *s, int sl, char *sid)
       return p;
     }
 #if defined(LIBSOLVEXT_FEATURE_ARCHREPO) && defined(ARCH_ADD_WITH_PKGID)
-  else if (sl >= 11 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz")))
+  else if (sl >= 12 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz") || !strcmp(s + sl - 12, ".pkg.tar.zst")))
     p = repo_add_arch_pkg(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|ARCH_ADD_WITH_PKGID);
 #endif
   solv_free(path);
@@ -2921,6 +3320,106 @@ subpack_sort_cmp(const void *ap, const void *bp, void *dp)
     return r;
   r = strcmp(pool_id2str(pool, a[0]), pool_id2str(pool, b[0]));
   return r ? r : a[0] - b[0];
+}
+
+struct orderpackids_ent {
+    SV *sv;
+    char *name;
+    char *flavor;
+    int namelen;
+    long long incident;
+};
+
+static int
+orderpackids_cmp(const void *ap, const void *bp)
+{
+  struct orderpackids_ent *ea = (struct orderpackids_ent *)ap;
+  struct orderpackids_ent *eb = (struct orderpackids_ent *)bp;
+  char *na = ea->name;
+  char *nb = eb->name;
+  int l, r;
+
+  /* put _volatile to back */
+  if (na[0] == '_' && !strcmp(na, "_volatile")) {
+    return nb[0] == '_' && !strcmp(nb, "_volatile") ? 0 : 1;
+  }
+  if (nb[0] == '_' && !strcmp(nb, "_volatile"))
+    return -1;
+
+  /* compare name */
+  l = ea->namelen > eb->namelen ? eb->namelen : ea->namelen;
+  r = strncmp(na, nb, l);
+  if (r)
+    return r;
+  if (ea->namelen > l)
+    return 1;
+  if (eb->namelen > l)
+    return -1;
+
+  /* compare flavor */
+  if (ea->flavor) {
+    if (!eb->flavor)
+      return 1;
+    r = strcmp(ea->flavor, eb->flavor);
+    if (r)
+      return r;
+  } else if (eb->flavor) {
+    return -1;
+  }
+
+  /* compare incident */
+  if (ea->incident > eb->incident)
+    return -1;
+  if (ea->incident < eb->incident)
+    return 1;
+
+  return strcmp(na, nb);
+}
+
+static int
+orderpackids_cmp_maint(const void *ap, const void *bp)
+{
+  struct orderpackids_ent *ea = (struct orderpackids_ent *)ap;
+  struct orderpackids_ent *eb = (struct orderpackids_ent *)bp;
+  char *na = ea->name;
+  char *nb = eb->name;
+  int l, r;
+
+  /* put _volatile to back */
+  if (na[0] == '_' && !strcmp(na, "_volatile")) {
+    return nb[0] == '_' && !strcmp(nb, "_volatile") ? 0 : 1;
+  }
+  if (nb[0] == '_' && !strcmp(nb, "_volatile"))
+    return -1;
+
+  /* compare incident */
+  if (ea->incident > eb->incident)
+    return -1;
+  if (ea->incident < eb->incident)
+    return 1;
+
+  /* compare name */
+  l = ea->namelen > eb->namelen ? eb->namelen : ea->namelen;
+  r = strncmp(na, nb, l);
+  if (r)
+    return r;
+  if (ea->namelen > l)
+    return 1;
+  if (eb->namelen > l)
+    return -1;
+
+  /* compare flavor */
+  if (ea->flavor) {
+    if (!eb->flavor)
+      return 1;
+    r = strcmp(ea->flavor, eb->flavor);
+    if (r)
+      return r;
+  } else if (eb->flavor) {
+    return -1;
+  }
+
+  return strcmp(na, nb);
 }
 
 /* This is an OpenSSL-compatible implementation of the RSA Data Security,
@@ -3311,7 +3810,7 @@ struct deltaout {
 static inline unsigned long long getu48(unsigned char *d)
 {
   unsigned long long x = d[0] << 8 | d[1];
-  return (x << 32) | (d[2] << 24 | d[3] << 16 | d[4] << 8 | d[5]);
+  return (x << 32) | (unsigned int)(d[2] << 24 | d[3] << 16 | d[4] << 8 | d[5]);
 }
 
 static inline void putu48(unsigned char *d, unsigned long long x)
@@ -4958,6 +5457,121 @@ printobscpioinstr(FILE *fp, int fdstore, int withmeta)
   printf("stats file_size %lld\n", (unsigned long long)ftell(fp));
 }
 
+static int
+unifymodules_cmp(const void *ap, const void *bp, void *dp)
+{
+  return *(Id *)ap - *(Id *)bp;
+}
+
+static int
+missingmodules_cmp(const void *ap, const void *bp, void *dp)
+{
+  const Id *a = ap;
+  const Id *b = bp;
+  if (a[0] != b[0])
+    return a[0] - b[0];
+  if (!a[1] && b[1])
+    return -1;
+  if (!b[1] && a[1])
+    return 1;
+  return a[1] - b[1];
+}
+
+static int
+is_dod_package(Solvable *s)
+{
+  const char *str = solvable_lookup_str(s, buildservice_id);
+  return str && !strcmp(str, "dod") ? 1 : 0;
+}
+
+static Solvable *
+find_corresponding_dod(Solvable *s)
+{
+  Repo *repo = s->repo;
+  Id p2;
+  Solvable *s2;
+
+  if (!repo)
+    return 0;
+  FOR_REPO_SOLVABLES(repo, p2, s2)
+    {
+      if (s->name == s2->name && s->evr == s2->evr && s->arch == s2->arch && s != s2 && is_dod_package(s2))
+	return s2;
+    }
+  return 0;
+}
+
+struct scc_data {
+  Id *edata;
+  Id *vedge;
+  Queue *sccs;
+  int *stack;
+  int nstack;
+  int *low;
+  int idx;
+};
+
+static void
+scc_collect(struct scc_data *scc, int node)
+{
+  int *low = scc->low;
+  Id *e;
+  queue_push(scc->sccs, node);
+  low[node] = -1;
+  for (e = scc->edata + scc->vedge[node]; *e; e++)
+    if (*e != -1 && low[*e] > 0)
+      scc_collect(scc, *e);
+}
+
+/* Tarjan's SCC algorithm */
+static int
+scc_visit(struct scc_data *scc, int node)
+{
+  int l, myidx, *low = scc->low, nontrivial = 0;
+  Id *e;
+  low[node] = myidx = scc->idx++;
+  for (e = scc->edata + scc->vedge[node]; *e; e++)
+    {
+      if (*e == -1 || *e == node)
+	continue;
+      if (!(l = low[*e]))
+	l = scc_visit(scc, *e);
+      if (l > 0)
+	nontrivial = 1;
+      if (l > 0 && l < low[node])
+	low[node] = l;
+    }
+  if (low[node] != myidx)
+    return low[node];
+  low[node] = -1;
+  if (nontrivial)
+    {
+      scc_collect(scc, node);
+      queue_push(scc->sccs, 0);
+    }
+  return -1;
+}
+
+static void
+find_sccs(Queue *edata, Queue *vedge, Queue *sccs)
+{
+  struct scc_data scc;
+  int i;
+  scc.edata = edata->elements;
+  scc.vedge = vedge->elements;
+  scc.sccs = sccs;
+  scc.low = solv_calloc(vedge->count, sizeof(int));
+  scc.idx = 1;
+  for (i = 1; i < vedge->count; i++)
+    if (!scc.edata[vedge->elements[i]])
+      scc.low[i] = -1;
+  for (i = 1; i < vedge->count; i++)
+    if (!scc.low[i])
+      scc_visit(&scc, i);
+  solv_free(scc.low);
+}
+
+
 MODULE = BSSolv		PACKAGE = BSSolv
 
 void
@@ -4984,6 +5598,7 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 	    Queue todo;
 	    Queue cycles;
 	    Map edgeunifymap;
+	    int didsccs = 0;
 
 	    if (ix)
 	      {
@@ -5194,6 +5809,13 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 		    continue;
 		  }
 		/* oh no, we found a cycle, record and break it */
+		if (depsortsccs && !didsccs && cycp)
+		  {
+		    /* use Tarjan's SCC algorithm */
+		    find_sccs(&edata, &vedge, &cycles);
+		    queue_push(&cycles, 0);
+		    didsccs = cycles.count;
+		  }
 		cy = cycles.count;
 		for (j = todo.count - 1; j >= 0; j--)
 		  if (todo.elements[j] == -i)
@@ -5229,7 +5851,10 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 		todo.count = cycstart + 1;
 	      }
 
-	    /* recored cycles */
+	    if (didsccs && depsortsccs != 2)
+	      queue_truncate(&cycles, didsccs - 1);
+
+	    /* record cycles */
 	    if (cycles.count && cycp && SvROK(cycp) && SvTYPE(SvRV(cycp)) == SVt_PVAV)
 	      {
 		AV *av = (AV *)SvRV(cycp);
@@ -5253,6 +5878,14 @@ depsort(HV *deps, SV *mapp, SV *cycp, ...)
 	    solv_free(mark);
 	    solv_free(names);
 	}
+
+int
+setdepsortsccs(int flag)
+    CODE:
+	depsortsccs = flag;
+	RETVAL = flag;
+    OUTPUT:
+	RETVAL
 
 int
 setgenmetaalgo(int algo)
@@ -5557,6 +6190,80 @@ add_meta(AV *new_meta, SV *sv, const char *bin, const char *packid = 0)
 	    }
 	    free(buf);
 	}
+
+int
+diffdepth_meta(AV *av1, SV *sv2)
+    CODE:
+        SSize_t m1n;
+	m1n = av_len(av1) + 1;
+	RETVAL = 1;
+	if (SvROK(sv2) && SvTYPE(SvRV(sv2)) == SVt_PVAV) {
+	    AV *av2 = (AV *)SvRV(sv2);
+	    SSize_t i, m2n = av_len(av2) + 1;
+	    if (!m2n) {
+		RETVAL = m1n ? 1 : 0;
+	    } else if (m1n) {
+		for (i = 0; ; i++) {
+		    char *l1 = 0, *l2 = 0;
+		    if (i < m1n) {
+			l1 = avlookupstr(av1, i);
+			if (!l1 || !*l1) {
+			    croak("diffdepth_meta: illegal entry in meta array\n");
+			    XSRETURN_UNDEF;
+			}
+		    }
+		    if (i < m2n) {
+			l2 = avlookupstr(av2, i);
+			if (!l2 || !*l2) {
+			    croak("diffdepth_meta: illegal entry in meta array\n");
+			    XSRETURN_UNDEF;
+			}
+		    }
+		    if (!l1 || !l2 || strcmp(l1, l2)) {
+			RETVAL = i ? metadepth(l1, l2) : (l1 || l2  ? 1 : 0);
+			break;
+		    }
+		}
+	    }
+	} else {
+	    char *m2;
+	    STRLEN m2l;
+	    if (!SvPOK(sv2)) {
+		croak("diffdepth_meta: 2nd argument is not a string or an array ref\n");
+		XSRETURN_UNDEF;
+	    }
+	    m2 = (char *)SvPV(sv2, m2l);
+	    if (!m2l) {
+		RETVAL = m1n ? 1 : 0;
+	    } else if (m1n) {
+		SSize_t i;
+		for (i = 0; ; i++) {
+		    char *l1 = 0, *l2 = 0;
+		    size_t l1n = 0;
+		    if (i < m1n) {
+			l1 = avlookupstr(av1, i);
+			if (!l1 || !*l1) {
+			    croak("diffdepth_meta: illegal entry in meta array\n");
+			    XSRETURN_UNDEF;
+			}
+			l1n = strlen(l1);
+		    }
+		    if (*m2) {
+			l2 = m2;
+		    }
+		    if (!l1 || !l2 || strncmp(l1, l2, l1n) || (l2[l1n] != 0 && l2[l1n] != '\n')) {
+			RETVAL = i ? metadepth(l1, l2) : (l1 || l2 ? 1 : 0);
+			break;
+		    }
+		    m2 += l1n;
+		    if (*m2)
+			m2++;
+		}
+	    }
+	}
+
+    OUTPUT:
+	RETVAL
 
 SV *
 thawcache(SV *sv)
@@ -5870,6 +6577,176 @@ obscpioinstr(const char *file, const char *store = 0)
 	    }
 	}
 
+int
+kiwiproductcheck(HV *fns_hv, int mode, HV *unneeded_na_hv, HV *deps_hv, SV *seen_fn_sv, SV *archs_sv)
+    CODE:
+	{
+	    HV *seen_fn_hv = 0;
+	    HV *archs_hv = 0;
+	    HE *entry;
+	    char fnbuf[1024];
+
+	    if (seen_fn_sv && SvOK(seen_fn_sv)) {
+		if (!SvROK(seen_fn_sv) || SvTYPE(SvRV(seen_fn_sv)) != SVt_PVHV)
+		    croak("kiwiproductcheck: seen_fn is not a hash reference\n");
+		seen_fn_hv = (HV*)SvRV(seen_fn_sv);
+	    }
+	    if (archs_sv && SvOK(archs_sv)) {
+		if (!SvROK(archs_sv) || SvTYPE(SvRV(archs_sv)) != SVt_PVHV)
+		    croak("kiwiproductcheck: archs is not a hash reference\n");
+		archs_hv = (HV*)SvRV(archs_sv);
+	    }
+	    fnbuf[0] = '-';
+	    hv_iterinit(fns_hv);
+	    RETVAL = 0;
+	    while ((entry = hv_iternext(fns_hv))) {
+		I32 fnlen, importlen;
+		char *fn = hv_iterkey(entry, &fnlen);
+		char *arch;
+		size_t archlen;
+		char *name, *ne;
+		size_t namelen;
+		SV *one_sv;
+
+		if ((U32)fnlen > 0x1000000)	/* what? */
+		    continue;
+		if (fnlen < 6)
+		    continue;
+		if (memcmp(fn + fnlen - 4, ".rpm", 4) != 0)
+		    continue;	/* not a rpm */
+		fnlen -= 4;
+		if (fn[fnlen - 1] == 'c') {
+		    if (fnlen > 4 && !memcmp(fn + fnlen - 4, ".src", 4))
+			continue;	/* ignore src rpms */
+		    if (fnlen > 6 && !memcmp(fn + fnlen - 6, ".nosrc", 6))
+			continue;	/* ignore nosrc rpms */
+		}
+		importlen = 0;
+		if (fnlen > 10 && !memcmp(fn, "::import::", 10) && fn[10] != ':') {
+		    char *ie = memchr(fn + 10, ':', fnlen - 10);
+		    if (ie && ie != fn + fnlen - 1 && ie[1] == ':') {
+			if (archs_hv && hv_exists(archs_hv, fn + 10, ie - (fn + 10)))
+			    continue;	/* import arch is in archs hash, ignore */
+			ie += 2;
+			importlen = ie - fn;
+			fnlen -= importlen;
+			fn = ie;
+		    }
+		}
+		if (fnlen < 2)
+		    continue;
+		if ((arch = memrchr(fn, '.', fnlen)) == 0)
+		    continue;
+		arch++;
+		archlen = (fn + fnlen) - arch;
+		ne = memrchr(fn, '-', arch - 1 - fn);	/* find start of release */
+		if (!ne)
+		    continue;
+		ne = memrchr(fn, '-', ne - 1 - fn);	/* find start of version */
+		if (!ne)
+		    continue;
+		name = fn;
+		namelen = (ne - fn);
+		if (!namelen || !archlen || namelen + archlen + 3 > sizeof(fnbuf))
+		    continue;
+		memcpy(fnbuf + 1, name, namelen);
+		fnbuf[1 + namelen] = '-';	/* use name-arch for debug test */
+		memcpy(fnbuf + 1 + namelen + 1, arch, archlen);
+		fnbuf[1 + namelen + 1 + archlen] = 0;
+		ne = fnbuf;
+		while ((ne = strchr(ne + 1, '-')) != 0) {
+		    if (ne[1] != 'd' && ne[1] != 'e')
+			continue;
+		    if (memcmp(ne + 1, "debuginfo-", 10) == 0 || memcmp(ne + 1, "debugsource-", 12) == 0)
+			break;
+		}
+		fnbuf[1 + namelen] = '.';	/* make it name.arch */
+		if (ne) {
+		    /* this is a debug package */
+		    if ((mode & KIWIPRODUCTCHECK_NODBG) != 0)
+			continue;
+		    if (!hv_exists(deps_hv, fnbuf + 1, namelen))
+			continue;					/* skip if not in deps hash */
+		}
+		if (hv_exists(unneeded_na_hv, fnbuf + 1, namelen + 1 + archlen))
+		    continue;						/* skip if in unneeded_na hash */
+		if (seen_fn_hv && hv_exists(seen_fn_hv, fn, fnlen + 4))	/* +4 to get the .rpm back */
+		    continue;						/* skip if in seen_fn */
+		if (importlen && seen_fn_hv && hv_exists(seen_fn_hv, fn - importlen, importlen + fnlen + 4))
+		    continue;						/* skip if in seen_fn */
+		if ((mode & KIWIPRODUCTCHECK_ALLPKGS) != 0) {
+		    if (!hv_exists(deps_hv, fnbuf, namelen + 1)) {
+			RETVAL = 1;
+			break;
+		    }
+		} else {
+		    if (hv_exists(deps_hv, fnbuf + 1, namelen)) {
+			RETVAL = 1;
+			break;
+		    }
+		}
+		/* add new entry into unneeded_na so that we do not need to check deps_hv in the future */
+		one_sv = newSViv(1);
+		hv_store(unneeded_na_hv, fnbuf + 1, namelen + 1 + archlen, one_sv, 0);
+	    }
+	}
+    OUTPUT:
+	RETVAL
+
+void
+orderpackids(int mode, ...)
+    PPCODE:
+	{
+	    struct orderpackids_ent *ents;
+	    int i, nents = items - 1;
+	    ents = calloc(sizeof(*ents), nents);
+	    if (!ents)
+		croak("orderpackids: out of memory\n");
+	    for (i = 0; i < nents; i++) {
+		char *name, *n;
+		ents[i].sv = ST(i + 1);
+		ents[i].name = name = SvPV_nolen(ents[i].sv);
+		n = strrchr(name, ':');
+		if (n && name[0] == '_' && ((n - name == 8 && !strncmp(name, "_product", 8)) || (n - name == 10 && !strncmp(name, "_patchinfo", 10))))
+		    n = 0;
+		ents[i].flavor = n ? n + 1 : 0;
+		if (!n)
+		    n = name + strlen(name);
+		ents[i].namelen = n - name;
+		ents[i].incident = 99999999999999LL;
+		if (n != name && n[-1] >= '0' && n[-1] <= '9') {
+		    int n2 = n - name - 1;
+		    while (n2 && name[n2 - 1] >= '0' && name[n2 - 1] <= '9')
+			n2--;
+		    if (n2 && name[n2 - 1] == '.') {
+			ents[i].incident = strtoull(name + n2, NULL, 10);
+			ents[i].namelen = n2 - 1;
+		    } else {
+			char *ip = name;
+			while ((ip = strchr(ip, '.')) != 0) {
+			    ip++;
+			    if (!strncmp(ip, "imported_", 9)) {
+				ents[i].namelen = ip - 1 - name;
+				ents[i].incident = strtoull(name + n2, NULL, 10) - 1000000LL;
+				break;
+			    }
+			}
+		    }
+		}
+		/* fprintf(stderr, "orderpackids: %s  len %d flavor %s incident %lld\n", ents[i].name, ents[i].namelen, ents[i].flavor ? ents[i].flavor : "NULL", ents[i].incident); */
+	    }
+	    if (nents > 1) {
+		if ((mode & ORDERPACKIDS_ISMAINT) != 0)
+		    qsort(ents, nents, sizeof(*ents), orderpackids_cmp_maint);
+		else
+		    qsort(ents, nents, sizeof(*ents), orderpackids_cmp);
+	    }
+	    for (i = 0; i < nents; i++)
+		ST(i) = ents[i].sv;
+	    free(ents);
+	    XSRETURN(nents);
+	}
+
 
 MODULE = BSSolv		PACKAGE = BSSolv::pool		PREFIX = pool
 
@@ -5887,7 +6764,9 @@ new(char *packname = "BSSolv::pool")
 	    buildservice_dodurl = pool_str2id(pool, "buildservice:dodurl", 1);
 	    expander_directdepsend = pool_str2id(pool, "-directdepsend--", 1);
 	    buildservice_dodcookie = pool_str2id(pool, "buildservice:dodcookie", 1);
+	    buildservice_dodresources = pool_str2id(pool, "buildservice:dodresources", 1);
 	    buildservice_annotation = pool_str2id(pool, "buildservice:annotation", 1);
+	    buildservice_modules = pool_str2id(pool, "buildservice:modules", 1);
 	    pool_freeidhashes(pool);
 	    RETVAL = pool;
 	}
@@ -5968,6 +6847,7 @@ repofrombins(BSSolv::pool pool, char *name, char *dir, ...)
 #ifdef ARCH_ADD_WITH_PKGID
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.gz"))
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.xz"))
+                    && (sl < 12 || strcmp(s + sl - 12, ".pkg.tar.zst"))
 #endif
 		   )
 		  continue;
@@ -5996,7 +6876,7 @@ repofromdata(BSSolv::pool pool, char *name, SV *rv)
 		croak("BSSolv::pool::repofromdata: rv is not a HASH or ARRAY reference");
 	    repo = repo_create(pool, name);
 	    data = repo_add_repodata(repo, 0);
-	    data2solvables(repo, data, SvRV(rv));
+	    data2solvables(repo, data, SvRV(rv), 0);
 	    if (name && !strcmp(name, "/external/"))
 	      repodata_set_void(data, SOLVID_META, buildservice_external);
 	    repo_internalize(repo);
@@ -6194,6 +7074,33 @@ pkg2checksum(BSSolv::pool pool, int p)
 	RETVAL
 
 int
+pkg2inmodule(BSSolv::pool pool, int p)
+    CODE:
+	RETVAL = solvable_lookup_type(pool->solvables + p, buildservice_modules) != 0;
+    OUTPUT:
+	RETVAL
+
+void
+pkg2modules(BSSolv::pool pool, int p)
+    PPCODE:
+	{
+	  Solvable *s = pool->solvables + p;
+	  Queue modules;
+	  int i;
+	  queue_init(&modules);
+	  solvable_lookup_idarray(s, buildservice_modules, &modules);
+	  if (!modules.count && !is_dod_package(s))
+	    {
+	      Solvable *s2 = find_corresponding_dod(s);
+	      if (s2)
+		solvable_lookup_idarray(s2, buildservice_modules, &modules);
+	    }
+	  for (i = 0; i < modules.count; i++)
+	    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, modules.elements[i]), 0)));
+	  queue_free(&modules);
+	}
+
+int
 verifypkgchecksum(BSSolv::pool pool, int p, char *path)
     CODE:
 	{
@@ -6278,9 +7185,28 @@ pkg2data(BSSolv::pool pool, int p)
 	    ss = solvable_lookup_str(s, buildservice_id);
 	    if (ss)
 	      (void)hv_store(RETVAL, "id", 2, newSVpv(ss, 0), 0);
+#if LIBSOLV_VERSION >= 722
+	    ss = solvable_lookup_str(s, SOLVABLE_MULTIARCH);
+	    if (ss)
+	      (void)hv_store(RETVAL, "multiarch", 9, newSVpv(ss, 0), 0);
+#endif
 	    ss = solvable_lookup_str(s, buildservice_annotation);
 	    if (ss)
 	      (void)hv_store(RETVAL, "annotation", 10, newSVpv(ss, 0), 0);
+	    if (solvable_lookup_type(s, buildservice_modules))
+	      {
+		Queue modules;
+		int i;
+		queue_init(&modules);
+		solvable_lookup_idarray(s, buildservice_modules, &modules);
+		if (modules.count)
+		  {
+        	    AV *av = newAV();
+		    for (i = 0; i < modules.count; i++)
+		      av_push(av, newSVpv(pool_id2str(pool, modules.elements[i]), 0));
+		    (void)hv_store(RETVAL, "modules", 7, newRV_noinc((SV*)av), 0);
+		  }
+	      }
 	}
     OUTPUT:
 	RETVAL
@@ -6410,6 +7336,32 @@ preparehashes(BSSolv::pool pool, char *prp, SV *gctxprpnotreadysv = 0)
 	}
 
 void
+setmodules(BSSolv::pool pool, AV *modulesav)
+    CODE:
+	{
+	  SSize_t i, n = av_len(modulesav);
+	  pool->appdata = solv_free(pool->appdata);
+	  if (n >= 0 && n < 1000000)
+	    {
+	      Id *modules = pool->appdata = solv_calloc(n + 2, sizeof(Id));
+	      for (i = 0; i <= n; i++)
+		modules[i] = pool_str2id(pool, avlookupstr(modulesav, i), 1);
+	      modules[i] = 0;
+	    }
+	}
+
+void
+getmodules(BSSolv::pool pool)
+    PPCODE:
+	if (pool->appdata)
+	  {
+	    Id *modules = pool->appdata;
+	    int i;
+	    for (i = 0; modules[i]; i++)
+	      XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, modules[i]), 0)));
+	  }
+
+void
 DESTROY(BSSolv::pool pool)
     CODE:
         if (pool->considered)
@@ -6417,12 +7369,31 @@ DESTROY(BSSolv::pool pool)
 	    map_free(pool->considered);
 	    pool->considered = solv_free(pool->considered);
 	  }
+	pool->appdata = solv_free(pool->appdata);
 	pool_free(pool);
 
 
 
 
 MODULE = BSSolv		PACKAGE = BSSolv::repo		PREFIX = repo
+
+void
+freerepo(BSSolv::repo repo)
+    CODE:
+	{
+	  repo_free(repo, 1);
+	}
+
+void
+allpackages(BSSolv::repo repo)
+    PPCODE:
+	{
+	    Id p;
+	    Solvable *s;
+	    EXTEND(SP, repo->nsolvables);
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      PUSHs(sv_2mortal(newSViv(p)));
+	}
 
 void
 pkgnames(BSSolv::repo repo)
@@ -6432,7 +7403,7 @@ pkgnames(BSSolv::repo repo)
 	    Id p;
 	    Solvable *s;
 	    Map c;
-	
+
 	    create_considered(pool, repo, &c, 0);
 	    EXTEND(SP, 2 * repo->nsolvables);
 	    FOR_REPO_SOLVABLES(repo, p, s)
@@ -6572,7 +7543,7 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
 		      continue;
 		    h = strhash(str) & hm;
 		    hh = HASHCHAIN_START;
-		    while ((id = ht[h]) != 0)
+		    while (ht[h])
 		      h = HASHCHAIN_NEXT(h, hh, hm);
 		    ht[h] = p;
 		  }
@@ -6592,6 +7563,7 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
 #ifdef ARCH_ADD_WITH_PKGID
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.gz"))
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.xz"))
+                    && (sl < 12 || strcmp(s + sl - 12, ".pkg.tar.zst"))
 #endif
 		   )
 		  continue;
@@ -6671,6 +7643,139 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
     OUTPUT:
 	RETVAL
 
+void
+modulesfrombins(BSSolv::repo repo, ...)
+    PPCODE:
+	{
+	    Pool *pool = repo->pool;
+	    Hashtable ht;
+	    Hashval h, hh, hm;
+	    Queue modules;
+	    Queue collectedmodules;
+            Id p, lastid;
+	    Solvable *s;
+	    int i, j;
+
+	    queue_init(&collectedmodules);
+	    queue_init(&modules);
+	    hm = mkmask(2 * repo->nsolvables + 1);
+	    ht = solv_calloc(hm + 1, sizeof(*ht));
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      {
+	        const char *bsid = solvable_lookup_str(s, buildservice_id);
+		if (!bsid)
+		  continue;
+		if (!strcmp(bsid, "dod"))
+		  h = s->name + s->evr * 37 + s->arch * 129;
+		else
+		  h = strhash(bsid);
+		h &= hm;
+		hh = HASHCHAIN_START;
+		while (ht[h])
+		  h = HASHCHAIN_NEXT(h, hh, hm);
+		ht[h] = p;
+	      }
+
+	    for (i = 1; i + 1 < items; i += 2)
+	      {
+		const char *bsid = SvPV_nolen(ST(i + 1));
+		h = strhash(bsid) & hm;
+		hh = HASHCHAIN_START;
+		while ((p = ht[h]) != 0)
+		  {
+		    const char *bsid2 = solvable_lookup_str(pool->solvables + p, buildservice_id);
+		    if (!strcmp(bsid, bsid2))
+		      break;
+		    h = HASHCHAIN_NEXT(h, hh, hm);
+		  }
+		if (!p)
+		  continue;
+		s = pool->solvables + p;
+	        h = (s->name + s->evr * 37 + s->arch * 129) & hm;
+		hh = HASHCHAIN_START;
+		while ((p = ht[h]) != 0)
+		  {
+		    Solvable *s2 = pool->solvables + p;
+		    if (s->name == s2->name && s->evr == s2->evr && s->arch == s2->arch)
+		      {
+			lastid = collectedmodules.count ? collectedmodules.elements[collectedmodules.count - 1] : 0;
+			solvable_lookup_idarray(s2, buildservice_modules, &modules);
+			for (j = 0; j < modules.count; j++)
+			  if (modules.elements[j] != lastid)
+			    queue_push(&collectedmodules, modules.elements[j]);
+		      }
+		    h = HASHCHAIN_NEXT(h, hh, hm);
+		  }
+	      }
+	    solv_free(ht);
+	    queue_free(&modules);
+	    /* sort and unify */
+	    solv_sort(collectedmodules.elements, collectedmodules.count, sizeof(Id), unifymodules_cmp, 0);
+	    lastid = -1;
+	    for (i = 0; i < collectedmodules.count; i++)
+	      {
+		if (collectedmodules.elements[i] == lastid)
+		  continue;
+		lastid = collectedmodules.elements[i];
+	        XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, lastid), 0)));
+	      }
+	    queue_free(&collectedmodules);
+	}
+
+void
+missingmodules(BSSolv::repo repo, ...)
+    PPCODE:
+	{
+	    Pool *pool = repo->pool;
+            Id p, *pp, *modules, id, req, lastid1, lastid2;
+	    Solvable *s;
+	    Queue missingq;
+	    int i, missing;
+
+	    queue_init(&missingq);
+	    if (pool->appdata && ((Id *)pool->appdata)[0] && has_keyname(repo, buildservice_modules))
+	      {
+		FOR_REPO_SOLVABLES(repo, p, s)
+		  {
+		    if (s->name != buildservice_modules || s->arch != ARCH_SRC || !s->requires)
+		      continue;
+		    id = s->repo->idarraydata[s->provides];
+		    for (modules = pool->appdata; *modules; modules++)
+		      if (id == *modules)
+			break;
+		    if (!*modules)
+		      continue;
+		    missing = 0;
+		    for (pp = s->repo->idarraydata + s->requires; (req = *pp) != 0; pp++)
+		      if (!match_modules_req(pool, req))
+			{
+			  missing = 1;
+			  queue_push2(&missingq, id, req);
+			}
+		    if (!missing)	/* we're good */
+		      queue_push2(&missingq, id, 0);
+		  }
+		/* sort and unify */
+		solv_sort(missingq.elements, missingq.count / 2, sizeof(Id) * 2, missingmodules_cmp, 0);
+		lastid1 = lastid2 = -1;
+		for (i = 0; i < missingq.count; i += 2)
+		  {
+		    if (missingq.elements[i] == lastid1 && missingq.elements[i + 1] == lastid2)
+		      continue;
+		    if (missingq.elements[i] != lastid1)
+		      {
+			lastid1 = missingq.elements[i];
+			lastid2 = missingq.elements[i + 1];
+		      }
+		    if (!lastid2)
+		      continue;
+		    lastid2 = missingq.elements[i + 1];
+		    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, lastid1), 0)));
+		    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, lastid2), 0)));
+		  }
+		queue_free(&missingq);
+	      }
+	}
 
 void
 getpathid(BSSolv::repo repo)
@@ -6724,6 +7829,21 @@ dodcookie(BSSolv::repo repo)
 	RETVAL
 
 void
+dodresources(BSSolv::repo repo)
+    PPCODE:
+	{
+	  Pool *pool = repo->pool;
+	  Queue dodresources;
+	  int i;
+
+	  queue_init(&dodresources);
+	  repo_lookup_idarray(repo, SOLVID_META, buildservice_dodresources, &dodresources);
+	  for (i = 0; i < dodresources.count; i++)
+	    XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, dodresources.elements[i]), 0)));
+	  queue_free(&dodresources);
+	}
+
+void
 updatedoddata(BSSolv::repo repo, HV *rhv = 0)
     CODE:
 	{
@@ -6740,9 +7860,10 @@ updatedoddata(BSSolv::repo repo, HV *rhv = 0)
 	    data = repo_add_repodata(repo, REPO_REUSE_REPODATA);
 	    repodata_unset(data, SOLVID_META, buildservice_dodurl);
 	    repodata_unset(data, SOLVID_META, buildservice_dodcookie);
+	    repodata_unset(data, SOLVID_META, buildservice_dodresources);
 	    /* add new data */
 	    if (rhv)
-		data2solvables(repo, data, (SV *)rhv);
+		data2solvables(repo, data, (SV *)rhv, 1);
 	    repo_internalize(repo);
 	}
 
@@ -6750,6 +7871,94 @@ void
 setpriority(BSSolv::repo repo, int priority)
     PPCODE:
 	repo->priority = priority;
+
+int
+mayhavemodules(BSSolv::repo repo)
+    CODE:
+	RETVAL = has_keyname(repo, buildservice_modules);
+    OUTPUT:
+	RETVAL
+
+void
+getmodules(BSSolv::repo repo)
+    PPCODE:
+	if (has_keyname(repo, buildservice_modules))
+	  {
+	    Pool *pool = repo->pool;
+	    Id p, lastid = -1;
+	    Solvable *s;
+	    Queue collectedmodules;
+	    int i;
+
+	    queue_init(&collectedmodules);
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      if (s->name == buildservice_modules && s->arch == ARCH_SRC && s->repo->idarraydata[s->provides])
+	        queue_push(&collectedmodules, s->repo->idarraydata[s->provides]);
+	    if (!collectedmodules.count)
+	      {
+	        Queue modules;
+		queue_init(&modules);
+		FOR_REPO_SOLVABLES(repo, p, s)
+		  {
+		    solvable_lookup_idarray(pool->solvables + p, buildservice_modules, &modules);
+		    for (i = 0; i < modules.count; i++)
+		      {
+			if (modules.elements[i] == lastid)
+			  continue;
+			lastid = modules.elements[i];
+			queue_push(&collectedmodules, modules.elements[i]);
+		      }
+		  }
+		queue_free(&modules);
+	      }
+	    /* sort and unify */
+	    solv_sort(collectedmodules.elements, collectedmodules.count, sizeof(Id), unifymodules_cmp, 0);
+	    lastid = -1;
+	    for (i = 0; i < collectedmodules.count; i++)
+	      {
+		if (collectedmodules.elements[i] == lastid)
+		  continue;
+		lastid = collectedmodules.elements[i];
+	        XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, lastid), 0)));
+	      }
+	    queue_free(&collectedmodules);
+	  }
+
+void
+getdodblobs(BSSolv::repo repo)
+    PPCODE:
+	{
+	    Pool *pool = repo->pool;
+	    int i;
+	    Id p;
+	    Solvable *s;
+	    Stringpool ss;
+	    stringpool_init_empty(&ss);
+	    FOR_REPO_SOLVABLES(repo, p, s)
+	      {
+		const char *str = solvable_lookup_str(s, buildservice_id);
+		unsigned int medianr;
+		const char *s, *se;
+		if (!str || strcmp(str, "dod") != 0)
+		  continue;
+		s = solvable_get_location(pool->solvables + p, &medianr);
+		if ((s = strrchr(s, '?')) == 0)
+		  continue;
+		for (++s; s; s = se ? se + 1 : 0)
+		  {
+		    se = strchr(s, ',');
+		    if (se)
+		      stringpool_strn2id(&ss, s, se - s, 1);
+		    else
+		      stringpool_str2id(&ss, s, 1);
+		  }
+	      }
+	    for (i = 2; i < ss.nstrings; i++)
+	      {
+	        XPUSHs(sv_2mortal(newSVpv(stringpool_id2str(&ss, i), 0)));
+	      }
+	    stringpool_free(&ss);
+	}
 
 
 MODULE = BSSolv		PACKAGE = BSSolv::expander	PREFIX = expander
@@ -6892,6 +8101,10 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 	    sv = svp ? *svp : 0;
 	    if (sv && SvTRUE(sv))
 	      options |= EXPANDER_OPTION_DOSUPPLEMENTS | EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES;
+	    svp = hv_fetch(config, "expandflags:keepfilerequires", 28, 0);
+	    sv = svp ? *svp : 0;
+	    if (sv && SvTRUE(sv))
+	      options |= EXPANDER_OPTION_KEEPFILEREQUIRES;
 	    svp = hv_fetch(config, "expand_dbg", 10, 0);
 	    sv = svp ? *svp : 0;
 	    if (sv && SvOK(sv))
@@ -6920,14 +8133,16 @@ expand(BSSolv::expander xp, ...)
 	{
 	    Pool *pool;
 	    int i, nerrors;
+	    AV *nativeav = 0;
 	    Id id, who, indepbuf[64];
-	    Queue ignoreq, in, out, indep;
+	    Queue ignoreq, in, out, indep, native;
 	    int directdepsend = 0;
 	    int options = 0;
 
 	    queue_init(&ignoreq);
 	    queue_init(&in);
 	    queue_init(&out);
+	    queue_init(&native);
 	    queue_init_buffer(&indep, indepbuf, sizeof(indepbuf)/sizeof(*indepbuf));
 	    pool = xp->pool;
 	    if (xp->debug)
@@ -6952,6 +8167,17 @@ expand(BSSolv::expander xp, ...)
 		      options |= EXPANDER_OPTION_DOSUPPLEMENTS | EXPANDER_OPTION_USESUPPLEMENTSFORCHOICES;
 		    else if (!strcmp(s, "--ignoreconflicts--"))
 		      options |= EXPANDER_OPTION_IGNORECONFLICTS;
+		    else if (!strcmp(s, "--keepfilerequires--"))
+		      options |= EXPANDER_OPTION_KEEPFILEREQUIRES;
+		    else if (!strcmp(s, "--extractnative--"))
+		      {
+			SV *sv = i + 1 < items ? ST(i + 1) : 0;
+			if (sv && SvROK(sv) && SvTYPE(SvRV(sv)) == SVt_PVAV)
+			  {
+			    nativeav = (AV *)SvRV(sv);
+			    i++;
+			  }
+		      }
 		    continue;
 		  }
 		if (*s == '-')
@@ -6980,7 +8206,7 @@ expand(BSSolv::expander xp, ...)
 	    if (xp->debug)
 	      expander_dbg(xp, "\n");
 
-	    nerrors = expander_expand(xp, &in, &indep, &out, &ignoreq, options);
+	    nerrors = expander_expand(xp, &in, &indep, &out, &ignoreq, nativeav ? &native : NULL, options);
 
 	    queue_free(&in);
 	    queue_free(&indep);
@@ -6999,7 +8225,7 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("nothing provides %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("nothing provides %s needed by %s", pool_dep2str(pool, id), solvid2name(pool, who));
 			else
 		          sv = newSVpvf("nothing provides %s", pool_dep2str(pool, id));
 			i += 3;
@@ -7009,7 +8235,7 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("%s conflicts with always true %s", pool_id2str(pool, pool->solvables[who].name), pool_dep2str(pool, id));
+		          sv = newSVpvf("%s conflicts with always true %s", solvid2name(pool, who), pool_dep2str(pool, id));
 			else
 		          sv = newSVpvf("conflict with always true %s", pool_dep2str(pool, id));
 			i += 3;
@@ -7019,11 +8245,11 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (!who && who2 >= 0)
-		          sv = newSVpvf("conflicts with %s", pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("conflicts with %s", solvid2name(pool, who2));
 			else if (who2 < 0)
-		          sv = newSVpvf("%s obsoletes %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("%s obsoletes %s", solvid2name(pool, who), solvid2name(pool, -who2));
 			else
-		          sv = newSVpvf("%s conflicts with %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("%s conflicts with %s", solvid2name(pool, who), solvid2name(pool, who2));
 			i += 3;
 		      }
 		    else if (type == ERROR_CONFLICT2)
@@ -7031,11 +8257,11 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (who2 < 0)
-		          sv = newSVpvf("%s is obsoleted by %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("%s is obsoleted by %s", solvid2name(pool, who), solvid2name(pool, -who2));
 			else if (who2 > 0)
-		          sv = newSVpvf("%s is in conflict with %s", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("%s is in conflict with %s", solvid2name(pool, who), solvid2name(pool, who2));
 			else
-		          sv = newSVpvf("%s is in conflict", pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("%s is in conflict", solvid2name(pool, who));
 			i += 3;
 		      }
 		    else if (type == ERROR_CONFLICTINGPROVIDERS)
@@ -7043,7 +8269,7 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-			  sv = newSVpvf("conflict for providers of %s needed by %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+			  sv = newSVpvf("conflict for providers of %s needed by %s", pool_dep2str(pool, id), solvid2name(pool, who));
 			else
 			  sv = newSVpvf("conflict for providers of %s", pool_dep2str(pool, id));
 			i += 3;
@@ -7053,9 +8279,9 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (who2 < 0)
-		          sv = newSVpvf("(provider %s obsoletes %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("(provider %s obsoletes %s)", solvid2name(pool, who), solvid2name(pool, -who2));
 			else
-		          sv = newSVpvf("(provider %s conflicts with %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("(provider %s conflicts with %s)", solvid2name(pool, who), solvid2name(pool, who2));
 			i += 3;
 		      }
 		    else if (type == ERROR_PROVIDERINFO2)
@@ -7063,11 +8289,11 @@ expand(BSSolv::expander xp, ...)
 			Id who2 = out.elements[i + 2];
 			who = out.elements[i + 1];
 			if (who2 < 0)
-		          sv = newSVpvf("(provider %s is obsoleted by %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[-who2].name));
+		          sv = newSVpvf("(provider %s is obsoleted by %s)", solvid2name(pool, who), solvid2name(pool, -who2));
 			else if (who2 > 0)
-		          sv = newSVpvf("(provider %s is in conflict with %s)", pool_id2str(pool, pool->solvables[who].name), pool_id2str(pool, pool->solvables[who2].name));
+		          sv = newSVpvf("(provider %s is in conflict with %s)", solvid2name(pool, who), solvid2name(pool, who2));
 			else
-		          sv = newSVpvf("(provider %s is in conflict)", pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("(provider %s is in conflict)", solvid2name(pool, who));
 			i += 3;
 		      }
 		    else if (type == ERROR_CHOICE)
@@ -7087,7 +8313,7 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("have choice for %s needed by %s: %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name), str);
+		          sv = newSVpvf("have choice for %s needed by %s: %s", pool_dep2str(pool, id), solvid2name(pool, who), str);
 			else
 		          sv = newSVpvf("have choice for %s: %s", pool_dep2str(pool, id), str);
 			i = j + 1;
@@ -7097,9 +8323,19 @@ expand(BSSolv::expander xp, ...)
 			id = out.elements[i + 1];
 			who = out.elements[i + 2];
 			if (who)
-		          sv = newSVpvf("cannot parse dependency %s from %s", pool_dep2str(pool, id), pool_id2str(pool, pool->solvables[who].name));
+		          sv = newSVpvf("cannot parse dependency %s from %s", pool_dep2str(pool, id), solvid2name(pool, who));
 			else
 		          sv = newSVpvf("cannot parse dependency %s", pool_dep2str(pool, id));
+			i += 3;
+		      }
+		    else if (type == ERROR_NOPROVIDERINFO)
+		      {
+			id = out.elements[i + 1];
+			who = out.elements[i + 2];
+			if (who)
+		          sv = newSVpvf("(got version %s provided by %s)", pool_id2str(pool, id), solvid2name(pool, who));
+			else
+		          sv = newSVpvf("(got version %s)", pool_id2str(pool, id));
 			i += 3;
 		      }
 		    else
@@ -7116,7 +8352,18 @@ expand(BSSolv::expander xp, ...)
 		    Solvable *s = pool->solvables + out.elements[i];
 		    PUSHs(sv_2mortal(newSVpv(pool_id2str(pool, s->name), 0)));
 		  }
+		if (nativeav)
+		  {
+		    for (i = 0; i < native.count; i++)
+		      {
+			const char *str = pool_dep2str(pool, native.elements[i]);
+			if (native.elements[i] == expander_directdepsend)
+			  str = "--directdepsend--";
+		        av_push(nativeav, newSVpv(str, 0));
+		      }
+		  }
 	      }
+	    queue_free(&native);
 	    queue_free(&out);
 	}
 

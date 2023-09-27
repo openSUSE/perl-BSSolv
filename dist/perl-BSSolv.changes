@@ -1,4 +1,17 @@
 -------------------------------------------------------------------
+Mon Feb 17 13:36:56 CET 2020 - mls@suse.de
+
+- update to version 0.37.0 (perl module 0.17 version)
+  * implement Fedora module support
+  * improved noprovider information
+
+-------------------------------------------------------------------
+Thu Jan  9 07:28:33 UTC 2020 - Adrian Schröter <adrian@suse.de>
+
+- update to version 0.36.0
+  * Arch linux zstd compression support
+
+-------------------------------------------------------------------
 Thu Dec 13 16:19:27 CET 2018 - mls@suse.de
 
 - update to version 0.35.0 (perl module 0.15 version)

@@ -24,6 +24,9 @@ sub read_config {
       push @{$config->{substr($l0, 0, -1)}}, @l;
     } elsif ($l0 eq 'binarytype:') {
       $config->{'binarytype'} = $l[0];
+    } elsif ($l0 eq 'fileprovides:') {
+      my $f = shift @l;
+      push @{$config->{'fileprovides'}->{$f}}, @l;
     } elsif ($l0 !~ /^[#%]/) {
       die("unknown keyword in config: $l0\n");
     }
@@ -95,6 +98,8 @@ sub parserepo {
         $packages[-1]->{'release'} = $3 if defined $3;
       }
       $packages[-1]->{$knowndeps{$1}} = \@ss;
+    } elsif ($s =~ /^M:/) {
+      $packages[-1]->{'multiarch'} = $ss[0]
     }
   }
   #@packages = reverse @packages;

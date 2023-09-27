@@ -1,5 +1,5 @@
-BSSolv version 0.02
-===================
+OBS libsolv perl bindings 
+=========================
 
 This is a support perl module for the OBS backend. It contains functions
 for repository management, dependency solving, package ordering, and meta

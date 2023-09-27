@@ -1,3 +1,11 @@
+libbssolv-perl (0.4.0-17) unstable; urgency=low
+
+  * implement Fedora module support
+  * improved noprovider information
+  * Arch linux zstd compression support
+
+ -- Michael Schroeder <mls@suse.de>  Mon, 17 Feb 2020 13:36:00 +0100
+
 libbssolv-perl (0.4.0-15) unstable; urgency=low
 
   * implement genmetaalgo 1

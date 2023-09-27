@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 
 use strict;
-use Test::More tests => 20;
+use Test::More tests => 21;
 
 require 't/testlib.pm';
 
@@ -93,3 +93,5 @@ is_deeply(\@r, [1, 'h'], 'install h');
 @r = expand($config, "--directdepsend--", "h");
 is_deeply(\@r, [undef, 'have choice for h: g h'], 'install --directdepsend-- h');
 
+@r = expand($config, "g = 2");
+is_deeply(\@r, [undef, '(got version 1-1)', 'nothing provides g = 2'], 'install g = 2');
