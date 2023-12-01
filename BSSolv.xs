@@ -63,6 +63,7 @@
 #define KIWIPRODUCTCHECK_NODBG		(1 << 0)
 #define KIWIPRODUCTCHECK_NOSRC		(1 << 1)
 #define KIWIPRODUCTCHECK_ALLPKGS	(1 << 2)
+#define KIWIPRODUCTCHECK_VERSIONED_DEPS (1 << 3)
 
 #define ORDERPACKIDS_ISMAINT		(1 << 0)
 
@@ -198,6 +199,18 @@ hvlookupav(HV *hv, const char *key, int keyl)
   if (!sv || !SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVAV)
     return 0;
   return (AV *)SvRV(sv);
+}
+
+static inline HV *
+hvlookuphv(HV *hv, const char *key, int keyl)
+{
+  SV *sv, **svp = hv_fetch(hv, key, keyl, 0);
+  if (!svp)
+    return 0;
+  sv = *svp;
+  if (!sv || !SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVHV)
+    return 0;
+  return (HV *)SvRV(sv);
 }
 
 static Id
@@ -5569,6 +5582,90 @@ find_sccs(Queue *edata, Queue *vedge, Queue *sccs)
   solv_free(scc.low);
 }
 
+static inline int
+kiwiproductcheck_vercmp(const char *s1, const char *s2, const char *q2)
+{
+  extern int solv_vercmp_rpm(const char *s1, const char *q1, const char *s2, const char *q2);
+  if (!s1)
+    s1 = "";
+  return solv_vercmp_rpm(s1, s1 + strlen(s1), s2, q2);
+}
+
+static int
+kiwiproductcheck_matchversion(HV *bi_hv, const char *s)
+{
+  const char *epoch1 = hvlookupstr(bi_hv, "epoch", 5);
+  const char *version1 = hvlookupstr(bi_hv, "version", 7);
+  const char *release1 = hvlookupstr(bi_hv, "release", 7);
+  const char *epoch2 = 0, *epoch2_end = 0;
+  const char *version2 = 0, *version2_end = 0;
+  const char *release2 = 0, *release2_end = 0;
+  int flags = 0, sense = 0;
+
+  for (;;s++)
+    {
+      if (*s == '>')
+	flags |= 1;
+      else if (*s == '=')
+	flags |= 2;
+      else if (*s == '<')
+	flags |= 4;
+      else
+	break;
+    }
+  if (!flags)
+    return 0;
+
+  while (*s == ' ' || *s == '\t')
+    s++;
+
+  /* parse EVR */
+  if (*s >= '0' && *s <= '9')
+    {
+      epoch2 = s++;
+      while (*s >= '0' && *s <= '9')
+	s++;
+      if (*s == ':')
+	epoch2_end = s++;
+      else
+	{
+	  s = epoch2;
+	  epoch2 = 0;
+	}
+    }
+  version2 = s;
+  version2_end = strrchr(version2, '-');
+  if (!version2_end)
+    version2_end = version2 + strlen(version2);
+  else
+    {
+      release2 = version2_end + 1;
+      release2_end = release2 + strlen(release2);
+    }
+
+  /* do the match */
+  if (epoch1 || epoch2)
+    {
+      if (!epoch1)
+	epoch1 = "0";
+      if (!epoch2)
+	{
+	  epoch2 = "0";
+	  epoch2_end = epoch2 + 1;
+	}
+      sense = kiwiproductcheck_vercmp(epoch1, epoch2, epoch2_end);
+    }
+  if (sense == 0 && version2)
+    sense = kiwiproductcheck_vercmp(version1, version2, version2_end);
+  if (sense == 0 && release2)
+    sense = kiwiproductcheck_vercmp(release1, release2, release2_end);
+
+  if (sense < 0)
+    return flags & 4 ? 1 : 0;
+  else if (sense > 0)
+    return flags & 1 ? 1 : 0;
+  return flags & 2 ? 1 : 0;
+}
 
 MODULE = BSSolv		PACKAGE = BSSolv
 
@@ -6676,6 +6773,20 @@ kiwiproductcheck(HV *fns_hv, int mode, HV *unneeded_na_hv, HV *deps_hv, SV *seen
 		    if (!hv_exists(deps_hv, fnbuf, namelen + 1)) {
 			RETVAL = 1;
 			break;
+		    }
+		} else if ((mode & KIWIPRODUCTCHECK_VERSIONED_DEPS) != 0) {
+		    const char *s = hvlookupstr(deps_hv, fnbuf + 1, namelen);
+		    if (s && *s) {
+			HV *bi_hv;
+			if (*s == '1') {
+			    RETVAL = 1;
+			    break;
+			}
+			bi_hv = hvlookuphv(fns_hv, fn - importlen, importlen + fnlen + 4);
+			if (bi_hv && kiwiproductcheck_matchversion(bi_hv, s)) {
+			    RETVAL = 1;
+			    break;
+			}
 		    }
 		} else {
 		    if (hv_exists(deps_hv, fnbuf + 1, namelen)) {
