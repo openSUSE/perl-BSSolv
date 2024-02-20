@@ -80,8 +80,8 @@ typedef struct _Expander {
   Map preferneg;
   Map prefernegx;
 
-  Queue conflictsq;
-  Map conflicts;
+  Queue conflictsq;		/* conflicts from the project config */
+  Map conflicts;		/* as map */
 
   int havefileprovides;
 
@@ -1532,6 +1532,8 @@ printf("expander_installed %s\n", pool_solvid2str(pool, p));
 	  if (id != s->name)
 	    continue;
 	  id = xp->conflictsq.elements[i ^ 1];
+	  if (!id)
+	    continue;
 	  FOR_PROVIDES(p2, pp2, id)
 	    {
 	      if (pool->solvables[p2].name != id)
@@ -2182,6 +2184,18 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   /* grow maps to make bit tests cheaper */
   expander_growmaps(xp);
 
+  /* add direct conflicts from the project config */
+  if (MAPTST(&xp->conflicts, 0))
+    {
+      for (i = 0; i < xp->conflictsq.count; i += 2)
+	if (!xp->conflictsq.elements[i])
+	  {
+	    p = xp->conflictsq.elements[i + 1];
+	    MAPEXP(&xpctx.conflicts, pool->nsolvables);
+	    MAPSET(&xpctx.conflicts, p);
+	  }
+    }
+
   /* process standard dependencies */
   if (indep)
     {
@@ -2773,6 +2787,8 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
       queue_push2(&xp->conflictsq, id, id2);
       MAPEXP(&xp->conflicts, id);
       MAPSET(&xp->conflicts, id);
+      if (!id)
+	continue;
       MAPEXP(&xp->conflicts, id2);
       MAPSET(&xp->conflicts, id2);
     }
@@ -8142,11 +8158,14 @@ new(char *packname = "BSSolv::expander", BSSolv::pool pool, HV *config)
 		      continue;
 		    sv = *svp;
 		    str = SvPV_nolen(sv);
-		    if (!str)
+		    if (!str || !*str)
 		      continue;
 		    p = strchr(str, ':');
 		    if (!p)
-		      continue;
+		      {
+			queue_push2(&conflict, 0, pool_str2id(pool, str, 1));
+		        continue;
+		      }
 		    id = pool_strn2id(pool, str, p - str, 1);
 		    str = p + 1;
 		    while ((p = strchr(str, ',')) != 0)
