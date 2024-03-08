@@ -2190,9 +2190,13 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
       for (i = 0; i < xp->conflictsq.count; i += 2)
 	if (!xp->conflictsq.elements[i])
 	  {
+	    FOR_PROVIDES(p, pp, xp->conflictsq.elements[i + 1])
+	      if (pool->solvables[p].name == xp->conflictsq.elements[i + 1])
+	        {
+		  MAPEXP(&xpctx.conflicts, pool->nsolvables);
+		  MAPSET(&xpctx.conflicts, p);
+	        }
 	    p = xp->conflictsq.elements[i + 1];
-	    MAPEXP(&xpctx.conflicts, pool->nsolvables);
-	    MAPSET(&xpctx.conflicts, p);
 	  }
     }
 
