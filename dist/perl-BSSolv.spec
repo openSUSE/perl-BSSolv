@@ -20,11 +20,8 @@ Name:           perl-BSSolv
 Version:        0.37.0
 Release:        0
 Url:            https://github.com/openSUSE/perl-BSSolv
-Source:         libsolv-0.7.22.tar.gz
-Source1:        Makefile.PL
-Source2:        BSSolv.pm
-Source3:        BSSolv.xs
-Source4:        typemap
+Source0:        perl-BSSolv-%{version}.tar.xz
+Source1:        libsolv-0.7.22.tar.gz
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 
 %if 0%{?fedora_version}
@@ -55,9 +52,8 @@ Group:          Development/Libraries/C and C++
 Using a Satisfyability Solver to compute package dependencies.
 
 %prep
-%setup -c
+%setup -a 1
 ln -s libsolv-* libsolv
-cp %{SOURCE1} %{SOURCE2} %{SOURCE3} %{SOURCE4} .
 pushd libsolv
 popd
 
