@@ -1522,7 +1522,7 @@ printf("expander_installed %s\n", pool_solvid2str(pool, p));
     findconflictsinfo(xpctx, p, 2);
 
   /* add synthetic conflicts from the project config */
-  if (MAPTST(&xp->conflicts, s->name))
+  if (xp->conflicts.size && MAPTST(&xp->conflicts, s->name))
     {
       int i;
       for (i = 0; i < xp->conflictsq.count; i++)
@@ -1984,7 +1984,8 @@ expander_growmaps(Expander *xp)
   MAPEXP(&xp->preferposx, pool->ss.nstrings);
   MAPEXP(&xp->preferneg, pool->ss.nstrings);
   MAPEXP(&xp->prefernegx, pool->ss.nstrings);
-  MAPEXP(&xp->conflicts, pool->ss.nstrings);
+  if (xp->conflicts.size)
+    MAPEXP(&xp->conflicts, pool->ss.nstrings);
 }
 
 static Id
@@ -2185,7 +2186,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   expander_growmaps(xp);
 
   /* add direct conflicts from the project config */
-  if (MAPTST(&xp->conflicts, 0))
+  if (xp->conflicts.size && MAPTST(&xp->conflicts, 0))
     {
       for (i = 0; i < xp->conflictsq.count; i += 2)
 	if (!xp->conflictsq.elements[i])
@@ -2196,7 +2197,6 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 		  MAPEXP(&xpctx.conflicts, pool->nsolvables);
 		  MAPSET(&xpctx.conflicts, p);
 	        }
-	    p = xp->conflictsq.elements[i + 1];
 	  }
     }
 
