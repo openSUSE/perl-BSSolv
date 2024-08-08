@@ -7420,6 +7420,8 @@ preparehashes(BSSolv::pool pool, char *prp, SV *gctxprpnotreadysv = 0)
 		    if (islocal)
 		      (void)hv_store(depislocal, str, strlen(str), newSViv((IV)1), 0);
 		    srcstr = pool_id2str(pool, srcname);
+		    if (*srcstr == 'c' && !strncmp(srcstr, "container:", 10))
+		      srcstr += 10;
 		    (void)hv_store(dep2src, str, strlen(str), newSVpv(srcstr, 0), 0);
 		    if (!islocal && prpnotready)
 		      {
@@ -7445,6 +7447,8 @@ preparehashes(BSSolv::pool pool, char *prp, SV *gctxprpnotreadysv = 0)
 			    av_push(subs, newSVpv(str, 0));
 			  }
 			str = pool_id2str(pool, lastsrc);
+			if (*str == 'c' && !strncmp(str, "container:", 10))
+			  str += 10;
 		        (void)hv_store(subpacks, str, strlen(str), newRV_noinc((SV *)subs), 0);
 		      }
 		    lastsrc = subq.elements[i + 1];
