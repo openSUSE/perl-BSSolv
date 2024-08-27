@@ -1021,6 +1021,7 @@ normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
 #define ERROR_CONFLICT2			8
 #define ERROR_ALLCONFLICT		9
 #define ERROR_NOPROVIDERINFO		10
+#define ERROR_PROVIDERINFO3		11
 
 static void
 expander_dbg(Expander *xp, const char *format, ...)
@@ -1227,7 +1228,11 @@ expander_check_cplxblock(ExpanderCtx *xpctx, Id p, Id dep, int deptype, Id *ptr,
       MAPEXP(&xpctx->conflicts, pool->nsolvables);
       MAPSET(&xpctx->conflicts, lastcon);
       if (p)
-        queue_push2(&xpctx->conflictsinfo, lastcon, p);	/* always do this for rich deps */
+	{
+	  queue_push2(&xpctx->conflictsinfo, lastcon, p);	/* always do this for rich deps */
+	  if (deptype == DEPTYPE_REQUIRES)
+            queue_push2(&xpctx->conflictsinfo, 0, dep);		/* add extra hint about the dependency */
+	}
       return -1;
     }
   else
@@ -1413,10 +1418,22 @@ findconflictsinfo(ExpanderCtx *xpctx, Id p, int recorderrors)
   if (xpctx->cidone < xpctx->out->count)
     updateconflictsinfo(xpctx);
 
-  for (i = 0; i < conflictsinfo->count; i++)
+  for (i = 0; i < conflictsinfo->count; i += 2)
     if (conflictsinfo->elements[i] == p)
       {
 	ret = conflictsinfo->elements[i + 1];
+	if (i + 2 < conflictsinfo->count && conflictsinfo->elements[i + 2] == 0)
+	  {
+	    Id dep = conflictsinfo->elements[i + 3];
+	    i += 2;
+	    if (dep && recorderrors == 1 && ret > 0)
+	      {
+		queue_push(&xpctx->errors, ERROR_PROVIDERINFO3);
+		queue_push2(&xpctx->errors, p, ret);
+		queue_push(&xpctx->errors, dep);
+		continue;
+	      }
+	  }
 	if (recorderrors)
 	  {
 	    queue_push(&xpctx->errors, recorderrors == 2 ? ERROR_CONFLICT2 : ERROR_PROVIDERINFO2);
@@ -8431,6 +8448,13 @@ expand(BSSolv::expander xp, ...)
 			else
 		          sv = newSVpvf("(provider %s is in conflict)", solvid2name(pool, who));
 			i += 3;
+		      }
+		    else if (type == ERROR_PROVIDERINFO3)
+		      {
+			Id who2 = out.elements[i + 2], dep = out.elements[i + 3];
+			who = out.elements[i + 1];
+		        sv = newSVpvf("(provider %s conflicts with %s needed by %s)", solvid2name(pool, who), pool_dep2str(pool, dep), solvid2name(pool, who2));
+			i += 4;
 		      }
 		    else if (type == ERROR_CHOICE)
 		      {
