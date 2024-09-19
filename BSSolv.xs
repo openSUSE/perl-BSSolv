@@ -2254,6 +2254,7 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
   /* process direct dependencies */
   for (i = 0; i < in->count; i++)
     {
+      Id otherq;
       id = in->elements[i];
       if (ISRELDEP(id) && GETRELDEP(pool, id)->flags == REL_ERROR)
 	{
@@ -2266,18 +2267,27 @@ expander_expand(Expander *xp, Queue *in, Queue *indep, Queue *out, Queue *ignore
 	  expander_installed_complexdep(&xpctx, 0, id, DEPTYPE_REQUIRES);
 	  continue;
 	}
-      q = 0;
+      q = otherq = 0;
       FOR_PROVIDES(p, pp, id)
 	{
 	  s = pool->solvables + p;
 	  if (!pool_match_nevr(pool, s, id))
-	    continue;
+	    {
+	      otherq = p;
+	      continue;
+	    }
 	  if (q)
 	    {
 	      q = 0;
 	      break;
 	    }
 	  q = p;
+	}
+      if (q && otherq && xpctx.conflicts.size && MAPTST(&xpctx.conflicts, q))
+	{
+	  if (xp->debug)
+	    findconflictsinfo(&xpctx, q, 0);
+	  q = 0;
 	}
       if (!q)
 	{
