@@ -37,6 +37,9 @@
 #if defined(LIBSOLVEXT_FEATURE_ARCHREPO)
 #include "repo_arch.h"
 #endif
+#if defined(LIBSOLVEXT_FEATURE_APK)
+#include "repo_apk.h"
+#endif
 #if defined(LIBSOLV_FEATURE_COMPLEX_DEPS)
 #include "pool_parserpmrichdep.h"
 #endif
@@ -171,6 +174,8 @@ myrepowritefilter(Repo *repo, Repokey *key, void *kfdata)
   if (key->name == SOLVABLE_LICENSE)
     return KEY_STORAGE_DROPPED;
   if (key->name == SOLVABLE_PKGID)
+    return KEY_STORAGE_INCORE;
+  if (key->name == SOLVABLE_HDRID)
     return KEY_STORAGE_INCORE;
   if (key->name == SOLVABLE_CHECKSUM)
     return KEY_STORAGE_INCORE;
@@ -2915,6 +2920,10 @@ set_disttype_from_location(Pool *pool, Solvable *so)
   if (disttype < 0 && sl >= 12 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz") || !strcmp(s + sl - 12, ".pkg.tar.zst")))
     disttype = DISTTYPE_ARCH;
 #endif
+#ifdef DISTTYPE_APK
+  if (disttype < 0 && sl >= 4 && !strcmp(s + sl - 4, ".apk"))
+    disttype = DISTTYPE_APK;
+#endif
   if (disttype >= 0 && pool->disttype != disttype)
     set_disttype(pool, disttype);
 }
@@ -3164,8 +3173,23 @@ create_considered(Pool *pool, Repo *repoonly, Map *considered, int unorderedrepo
 	      if (!pb || pb == p)
 		continue;
 	      sb = pool->solvables + pb;
-	      if (sb->repo != s->repo || sb->name != s->name || sb->arch != s->arch || sb->evr != s->evr)
+	      if (sb->repo != s->repo || sb->name != s->name || sb->evr != s->evr)
 		continue;
+	      if (sb->arch != s->arch)
+		{
+#ifdef DISTTYPE_APK
+		  /* apk dod repos have non-matching archs */
+		  if (olddisttype < 0)
+		    {
+		      olddisttype = pool->disttype;
+		      set_disttype_from_location(pool, s);
+		    }
+		  if (pool->disttype != DISTTYPE_APK)
+		    continue;
+#else
+		  continue;
+#endif
+		}
 	      bsid = solvable_lookup_str(s, buildservice_id);
 	      if (bsid && strcmp(bsid, "dod") == 0)
 		continue;	/* not downloaded */
@@ -3347,6 +3371,10 @@ repodata_addbin(Repodata *data, char *prefix, char *s, int sl, char *sid)
 #if defined(LIBSOLVEXT_FEATURE_ARCHREPO) && defined(ARCH_ADD_WITH_PKGID)
   else if (sl >= 12 && (!strcmp(s + sl - 11, ".pkg.tar.gz") || !strcmp(s + sl - 11, ".pkg.tar.xz") || !strcmp(s + sl - 12, ".pkg.tar.zst")))
     p = repo_add_arch_pkg(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|ARCH_ADD_WITH_PKGID);
+#endif
+#if defined(LIBSOLVEXT_FEATURE_APK)
+  else if (sl >= 4 && !strcmp(s + sl - 4, ".apk"))
+    p = repo_add_apk_pkg(data->repo, (const char *)path, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|REPO_NO_LOCATION|APK_ADD_WITH_PKGID|APK_ADD_WITH_HDRID);
 #endif
   solv_free(path);
   if (!p)
@@ -6999,6 +7027,9 @@ repofrombins(BSSolv::pool pool, char *name, char *dir, ...)
 		  continue;
 		if (strcmp(s + sl - 4, ".rpm")
                     && strcmp(s + sl - 4, ".deb")
+#ifdef LIBSOLVEXT_FEATURE_APK
+                    && strcmp(s + sl - 4, ".apk")
+#endif
                     && (sl < 10 || strcmp(s + sl - 10, ".obsbinlnk"))
 #ifdef ARCH_ADD_WITH_PKGID
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.gz"))
@@ -7222,6 +7253,19 @@ pkg2checksum(BSSolv::pool pool, int p)
 	{
 	    Id type;
 	    const char *s = solvable_lookup_checksum(pool->solvables + p, SOLVABLE_CHECKSUM, &type);
+	    if (s)
+		s = pool_tmpjoin(pool, solv_chksum_type2str(type), ":", s);
+	    RETVAL = s;
+	}
+    OUTPUT:
+	RETVAL
+
+const char *
+pkg2hdrid(BSSolv::pool pool, int p)
+    CODE:
+	{
+	    Id type;
+	    const char *s = solvable_lookup_checksum(pool->solvables + p, SOLVABLE_HDRID, &type);
 	    if (s)
 		s = pool_tmpjoin(pool, solv_chksum_type2str(type), ":", s);
 	    RETVAL = s;
@@ -7719,6 +7763,9 @@ updatefrombins(BSSolv::repo repo, char *dir, ...)
 		  continue;
 		if (strcmp(s + sl - 4, ".rpm")
                     && strcmp(s + sl - 4, ".deb")
+#ifdef LIBSOLVEXT_FEATURE_APK
+                    && strcmp(s + sl - 4, ".apk")
+#endif
                     && (sl < 10 || strcmp(s + sl - 10, ".obsbinlnk"))
 #ifdef ARCH_ADD_WITH_PKGID
                     && (sl < 11 || strcmp(s + sl - 11, ".pkg.tar.gz"))
