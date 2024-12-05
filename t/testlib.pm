@@ -111,6 +111,7 @@ sub setuptest {
   my $config = read_config('noarch', [ split("\n", $conf || '') ]);
   my $pool = BSSolv::pool->new();
   $pool->settype('deb') if $config->{'binarytype'} eq 'deb';
+  $pool->settype('apk') if $config->{'binarytype'} eq 'apk';
   $config->{'pool'} = $pool;
   $pool->repofromdata("repo", parserepo([ split("\n", $repo) ]));
   $pool->createwhatprovides();

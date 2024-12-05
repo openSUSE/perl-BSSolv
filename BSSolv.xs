@@ -402,7 +402,7 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
 }
 
 static inline void
-data2pkg_checksum(Repodata *data, Id p, Id key, const char *str)
+importchecksum(Repodata *data, Id p, Id key, const char *str)
 {
   char *cp, typebuf[8];
   Id ctype;
@@ -416,8 +416,8 @@ data2pkg_checksum(Repodata *data, Id p, Id key, const char *str)
     }
 }
 
-static int
-data2pkg(Repo *repo, Repodata *data, HV *hv, int isdod)
+static Id
+importpkg(Repo *repo, Repodata *data, HV *hv, int isdod)
 {
   Pool *pool = repo->pool;
   char *str;
@@ -503,10 +503,10 @@ data2pkg(Repo *repo, Repodata *data, HV *hv, int isdod)
     s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
   str = hvlookupstr(hv, "checksum", 8);
   if (str)
-    data2pkg_checksum(data, p, SOLVABLE_CHECKSUM, str);
+    importchecksum(data, p, SOLVABLE_CHECKSUM, str);
   str = hvlookupstr(hv, "hdrid", 5);
   if (str)
-    data2pkg_checksum(data, p, SOLVABLE_HDRID, str);
+    importchecksum(data, p, SOLVABLE_HDRID, str);
   str = hvlookupstr(hv, "annotation", 10);
   if (str && strlen(str) < 100000)
     repodata_set_str(data, p, buildservice_annotation, str);
@@ -521,6 +521,82 @@ data2pkg(Repo *repo, Repodata *data, HV *hv, int isdod)
 	}
     }
   return p;
+}
+
+static void
+exportpkg(HV *hv, Pool *pool, Solvable *s)
+{
+  Id id;
+  const char *ss, *se;
+  unsigned int medianr;
+
+  if (!s->repo)
+      return;
+  (void)hv_store(hv, "name", 4, newSVpv(pool_id2str(pool, s->name), 0), 0);
+  ss = pool_id2str(pool, s->evr);
+  se = ss;
+  while (*se >= '0' && *se <= '9')
+    se++;
+  if (se != ss && *se == ':' && se[1])
+    {
+      (void)hv_store(hv, "epoch", 5, newSVpvn(ss, se - ss), 0);
+      ss = se + 1;
+    }
+  se = strrchr(ss, '-');
+  if (se)
+    {
+      (void)hv_store(hv, "version", 7, newSVpvn(ss, se - ss), 0);
+      (void)hv_store(hv, "release", 7, newSVpv(se + 1, 0), 0);
+    }
+  else
+    (void)hv_store(hv, "version", 7, newSVpv(ss, 0), 0);
+  (void)hv_store(hv, "arch", 4, newSVpv(pool_id2str(pool, s->arch), 0), 0);
+  exportdeps(hv, "provides", 8, s->repo, s->provides, SOLVABLE_PROVIDES);
+  exportdeps(hv, "obsoletes", 9, s->repo, s->obsoletes, SOLVABLE_OBSOLETES);
+  exportdeps(hv, "conflicts", 9, s->repo, s->conflicts, SOLVABLE_CONFLICTS);
+  exportdeps(hv, "requires", 8, s->repo, s->requires, SOLVABLE_REQUIRES);
+  exportdeps(hv, "recommends", 10, s->repo, s->recommends, SOLVABLE_RECOMMENDS);
+  exportdeps(hv, "suggests", 8, s->repo, s->suggests, SOLVABLE_SUGGESTS);
+  exportdeps(hv, "supplements", 11, s->repo, s->supplements, SOLVABLE_SUPPLEMENTS);
+  exportdeps(hv, "enhances", 8, s->repo, s->enhances, SOLVABLE_ENHANCES);
+  if (solvable_lookup_void(s, SOLVABLE_SOURCENAME))
+    ss = pool_id2str(pool, s->name);
+  else
+    ss = solvable_lookup_str(s, SOLVABLE_SOURCENAME);
+  if (ss)
+    (void)hv_store(hv, "source", 6, newSVpv(ss, 0), 0);
+  ss = solvable_get_location(s, &medianr);
+  if (ss)
+    (void)hv_store(hv, "path", 4, newSVpv(ss, 0), 0);
+  ss = solvable_lookup_checksum(s, SOLVABLE_PKGID, &id);
+  if (ss && id == REPOKEY_TYPE_MD5)
+    (void)hv_store(hv, "hdrmd5", 6, newSVpv(ss, 0), 0);
+  ss = solvable_lookup_str(s, buildservice_id);
+  if (ss)
+    (void)hv_store(hv, "id", 2, newSVpv(ss, 0), 0);
+#if LIBSOLV_VERSION >= 722
+  ss = solvable_lookup_str(s, SOLVABLE_MULTIARCH);
+  if (ss)
+    (void)hv_store(hv, "multiarch", 9, newSVpv(ss, 0), 0);
+#endif
+  ss = solvable_lookup_str(s, buildservice_annotation);
+  if (ss)
+    (void)hv_store(hv, "annotation", 10, newSVpv(ss, 0), 0);
+  if (solvable_lookup_type(s, buildservice_modules))
+    {
+      Queue modules;
+      queue_init(&modules);
+      solvable_lookup_idarray(s, buildservice_modules, &modules);
+      if (modules.count)
+	{
+          int i;
+	  AV *av = newAV();
+	  for (i = 0; i < modules.count; i++)
+	    av_push(av, newSVpv(pool_id2str(pool, modules.elements[i]), 0));
+	  (void)hv_store(hv, "modules", 7, newRV_noinc((SV*)av), 0);
+	}
+      queue_free(&modules);
+    }
 }
 
 static void
@@ -560,7 +636,7 @@ data2solvables(Repo *repo, Repodata *data, SV *rsv, int isdod)
 	}
       if (!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVHV)
 	continue;
-      data2pkg(repo, data, (HV *)SvRV(sv), isdod);
+      importpkg(repo, data, (HV *)SvRV(sv), isdod);
     }
 
   /* set meta information */
@@ -3339,7 +3415,7 @@ repo_add_obsbinlnk(Repo *repo, const char *path, int flags)
       return 0;
     }
   data = repo_add_repodata(repo, flags);
-  p = data2pkg(repo, data, (HV *)sv, 0);
+  p = importpkg(repo, data, (HV *)sv, 0);
   SvREFCNT_dec(sv);
   if (!(flags & REPO_NO_INTERNALIZE))
     repodata_internalize(data);
@@ -7346,78 +7422,11 @@ pkg2data(BSSolv::pool pool, int p)
     CODE:
 	{
 	    Solvable *s = pool->solvables + p;
-	    Id id;
-	    const char *ss, *se;
-	    unsigned int medianr;
-
 	    if (!s->repo)
 		XSRETURN_EMPTY;
 	    RETVAL = newHV();
 	    sv_2mortal((SV*)RETVAL);
-	    (void)hv_store(RETVAL, "name", 4, newSVpv(pool_id2str(pool, s->name), 0), 0);
-	    ss = pool_id2str(pool, s->evr);
-	    se = ss;
-	    while (*se >= '0' && *se <= '9')
-	      se++;
-	    if (se != ss && *se == ':' && se[1])
-	      {
-		(void)hv_store(RETVAL, "epoch", 5, newSVpvn(ss, se - ss), 0);
-		ss = se + 1;
-	      }
-	    se = strrchr(ss, '-');
-	    if (se)
-	      {
-	        (void)hv_store(RETVAL, "version", 7, newSVpvn(ss, se - ss), 0);
-	        (void)hv_store(RETVAL, "release", 7, newSVpv(se + 1, 0), 0);
-	      }
-	    else
-	      (void)hv_store(RETVAL, "version", 7, newSVpv(ss, 0), 0);
-	    (void)hv_store(RETVAL, "arch", 4, newSVpv(pool_id2str(pool, s->arch), 0), 0);
-	    exportdeps(RETVAL, "provides", 8, s->repo, s->provides, SOLVABLE_PROVIDES);
-	    exportdeps(RETVAL, "obsoletes", 9, s->repo, s->obsoletes, SOLVABLE_OBSOLETES);
-	    exportdeps(RETVAL, "conflicts", 9, s->repo, s->conflicts, SOLVABLE_CONFLICTS);
-	    exportdeps(RETVAL, "requires", 8, s->repo, s->requires, SOLVABLE_REQUIRES);
-	    exportdeps(RETVAL, "recommends", 10, s->repo, s->recommends, SOLVABLE_RECOMMENDS);
-	    exportdeps(RETVAL, "suggests", 8, s->repo, s->suggests, SOLVABLE_SUGGESTS);
-	    exportdeps(RETVAL, "supplements", 11, s->repo, s->supplements, SOLVABLE_SUPPLEMENTS);
-	    exportdeps(RETVAL, "enhances", 8, s->repo, s->enhances, SOLVABLE_ENHANCES);
-	    if (solvable_lookup_void(s, SOLVABLE_SOURCENAME))
-	      ss = pool_id2str(pool, s->name);
-	    else
-	      ss = solvable_lookup_str(s, SOLVABLE_SOURCENAME);
-	    if (ss)
-	      (void)hv_store(RETVAL, "source", 6, newSVpv(ss, 0), 0);
-	    ss = solvable_get_location(s, &medianr);
-	    if (ss)
-	      (void)hv_store(RETVAL, "path", 4, newSVpv(ss, 0), 0);
-	    ss = solvable_lookup_checksum(s, SOLVABLE_PKGID, &id);
-	    if (ss && id == REPOKEY_TYPE_MD5)
-	      (void)hv_store(RETVAL, "hdrmd5", 6, newSVpv(ss, 0), 0);
-	    ss = solvable_lookup_str(s, buildservice_id);
-	    if (ss)
-	      (void)hv_store(RETVAL, "id", 2, newSVpv(ss, 0), 0);
-#if LIBSOLV_VERSION >= 722
-	    ss = solvable_lookup_str(s, SOLVABLE_MULTIARCH);
-	    if (ss)
-	      (void)hv_store(RETVAL, "multiarch", 9, newSVpv(ss, 0), 0);
-#endif
-	    ss = solvable_lookup_str(s, buildservice_annotation);
-	    if (ss)
-	      (void)hv_store(RETVAL, "annotation", 10, newSVpv(ss, 0), 0);
-	    if (solvable_lookup_type(s, buildservice_modules))
-	      {
-		Queue modules;
-		int i;
-		queue_init(&modules);
-		solvable_lookup_idarray(s, buildservice_modules, &modules);
-		if (modules.count)
-		  {
-        	    AV *av = newAV();
-		    for (i = 0; i < modules.count; i++)
-		      av_push(av, newSVpv(pool_id2str(pool, modules.elements[i]), 0));
-		    (void)hv_store(RETVAL, "modules", 7, newRV_noinc((SV*)av), 0);
-		  }
-	      }
+	    exportpkg(RETVAL, pool, s);
 	}
     OUTPUT:
 	RETVAL
