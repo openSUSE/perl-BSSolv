@@ -1023,7 +1023,7 @@ normalize_dep_unless_else(ExpanderCtx *xpctx, Id dep1, Id dep2, Id dep3, Queue *
   return -1;
 }
 
-static int expander_isignored(Expander *xp, Solvable *s, Id req);
+static int expander_isignored(ExpanderCtx *xpctx, Solvable *s, Id req);
 
 static int
 normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
@@ -1064,7 +1064,7 @@ normalize_dep(ExpanderCtx *xpctx, Id dep, Queue *bq, int flags)
 
   if (xpctx->ignore_s && (flags & CPLXDEPS_TODNF) == 0)
     {
-      if (expander_isignored(xpctx->xp, xpctx->ignore_s, dep))
+      if (expander_isignored(xpctx, xpctx->ignore_s, dep))
 	return 1;
     }
 
@@ -1188,8 +1188,9 @@ pkgname_sort_cmp(const void *ap, const void *bp, void *dp)
 }
 
 static int
-expander_isignored(Expander *xp, Solvable *s, Id req)
+expander_isignored(ExpanderCtx *xpctx, Solvable *s, Id req)
 {
+  Expander *xp = xpctx->xp;
   Pool *pool = xp->pool;
   Id id = id2name(pool, req);
   const char *n;
@@ -1213,7 +1214,7 @@ expander_isignored(Expander *xp, Solvable *s, Id req)
     }
   if (*n == '/')
     {
-      if (!xp->keepfilerequires && (!xp->havefileprovides || pool->whatprovides[id] <= 1))
+      if (!xpctx->keepfilerequires && (!xp->havefileprovides || pool->whatprovides[id] <= 1))
 	{
 	  MAPEXP(&xp->ignored, id);
 	  MAPSET(&xp->ignored, id);
@@ -1676,7 +1677,7 @@ printf("expander_installed %s\n", pool_solvid2str(pool, p));
 	      xpctx->ignore_s = 0;
 	      continue;
 	    }
-	  if (expander_isignored(xp, s, req))
+	  if (expander_isignored(xpctx, s, req))
 	    continue;
 	  queue_push2(&xpctx->todo, req, p);
 	}
@@ -2857,6 +2858,9 @@ expander_create(Pool *pool, Queue *preferpos, Queue *preferneg, Queue *ignore, Q
   xp->dorecommends = options & EXPANDER_OPTION_DORECOMMENDS ? 1 : 0;
   xp->dosupplements = options & EXPANDER_OPTION_DOSUPPLEMENTS ? 1 : 0;
   xp->keepfilerequires = options & EXPANDER_OPTION_KEEPFILEREQUIRES ? 1 : 0;
+
+  if (pool->disttype != DISTTYPE_RPM)
+    xp->keepfilerequires = 1;
 
   queue_init(&xp->preferposq);
   for (i = 0; i < preferpos->count; i++)
