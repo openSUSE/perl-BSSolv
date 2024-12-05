@@ -401,6 +401,21 @@ exportdeps(HV *hv, const char *key, int keyl, Repo *repo, Offset off, Id skey)
     (void)hv_store(hv, key, keyl, newRV_noinc((SV*)av), 0);
 }
 
+static inline void
+data2pkg_checksum(Repodata *data, Id p, Id key, const char *str)
+{
+  char *cp, typebuf[8];
+  Id ctype;
+  if (*str != ':' && (cp = strchr(str, ':')) != 0 && cp - str < sizeof(typebuf))
+    {
+      strncpy(typebuf, str, cp - str);
+      typebuf[cp - str] = 0;
+      ctype = solv_chksum_str2type(typebuf);
+      if (ctype)
+	repodata_set_checksum(data, p, key, ctype, cp + 1);
+    }
+}
+
 static int
 data2pkg(Repo *repo, Repodata *data, HV *hv, int isdod)
 {
@@ -488,18 +503,10 @@ data2pkg(Repo *repo, Repodata *data, HV *hv, int isdod)
     s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
   str = hvlookupstr(hv, "checksum", 8);
   if (str)
-    {
-      char *cp, typebuf[8];
-      Id ctype;
-      if (*str != ':' && (cp = strchr(str, ':')) != 0 && cp - str < sizeof(typebuf))
-	{
-	  strncpy(typebuf, str, cp - str);
-	  typebuf[cp - str] = 0;
-	  ctype = solv_chksum_str2type(typebuf);
-	  if (ctype)
-	    repodata_set_checksum(data, p, SOLVABLE_CHECKSUM, ctype, cp + 1);
-	}
-    }
+    data2pkg_checksum(data, p, SOLVABLE_CHECKSUM, str);
+  str = hvlookupstr(hv, "hdrid", 5);
+  if (str)
+    data2pkg_checksum(data, p, SOLVABLE_HDRID, str);
   str = hvlookupstr(hv, "annotation", 10);
   if (str && strlen(str) < 100000)
     repodata_set_str(data, p, buildservice_annotation, str);
@@ -6969,6 +6976,10 @@ settype(BSSolv::pool pool, char *type)
 #ifdef DISTTYPE_ARCH
 	else if (!strcmp(type, "arch"))
 	  set_disttype(pool, DISTTYPE_ARCH);
+#endif
+#ifdef DISTTYPE_APK
+	else if (!strcmp(type, "apk"))
+	  set_disttype(pool, DISTTYPE_APK);
 #endif
 	else
 	  croak("settype: unknown type '%s'\n", type);
