@@ -7028,6 +7028,17 @@ new(char *packname = "BSSolv::pool")
     CODE:
 	{
 	    Pool *pool = pool_create();
+#ifdef POOL_FLAG_KEEPIDHASHES
+	    /* we keep interning ids after createwhatprovides (expander
+	     * setup, dep parsing), so do not throw the hashes away just
+	     * to rebuild them over the complete pool a moment later */
+	    pool_set_flag(pool, POOL_FLAG_KEEPIDHASHES, 1);
+#endif
+#ifdef POOL_FLAG_NOWHATPROVIDESSHRINK
+	    /* our pools are short lived, the memory saved by unifying the
+	     * whatprovides data is not worth the sort */
+	    pool_set_flag(pool, POOL_FLAG_NOWHATPROVIDESSHRINK, 1);
+#endif
 	    set_disttype(pool, DISTTYPE_RPM);
 	    buildservice_id = pool_str2id(pool, "buildservice:id", 1);
 	    buildservice_repocookie= pool_str2id(pool, "buildservice:repocookie", 1);
@@ -7173,6 +7184,25 @@ createwhatprovides(BSSolv::pool pool, int unorderedrepos = 0)
 	  }
 	pool->considered = solv_calloc(sizeof(Map), 1);
 	create_considered(pool, 0, pool->considered, unorderedrepos);
+	{
+	  /* Our repos never carry filelists, but libsolv does not know
+	   * that: the first lookup of every file dependency (one per
+	   * FileProvides line of the project config, in expander_create)
+	   * makes pool_addstdproviders scan the filelist of every
+	   * solvable in the pool. If no repo has a filelist, tell libsolv
+	   * that all file provides are known so that lookups are O(1).
+	   * pool_addfileprovides is one cheap pass in that case. */
+	  int ridx, havefilelist = 0;
+	  Repo *repo;
+	  FOR_REPOS(ridx, repo)
+	    if (has_keyname(repo, SOLVABLE_FILELIST))
+	      {
+		havefilelist = 1;
+		break;
+	      }
+	  if (!havefilelist)
+	    pool_addfileprovides(pool);
+	}
 	pool_createwhatprovides(pool);
 
 void
