@@ -7029,6 +7029,10 @@ new(char *packname = "BSSolv::pool")
 	{
 	    Pool *pool = pool_create();
 	    set_disttype(pool, DISTTYPE_RPM);
+#ifdef POOL_FLAG_NOWHATPROVIDESSHRINK
+	    /* as our pools are short lived we optimize for speed */
+	    pool_set_flag(pool, POOL_FLAG_NOWHATPROVIDESSHRINK, 1);
+#endif
 	    buildservice_id = pool_str2id(pool, "buildservice:id", 1);
 	    buildservice_repocookie= pool_str2id(pool, "buildservice:repocookie", 1);
 	    buildservice_external = pool_str2id(pool, "buildservice:external", 1);
