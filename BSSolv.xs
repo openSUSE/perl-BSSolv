@@ -7593,6 +7593,25 @@ getmodules(BSSolv::pool pool)
 	      XPUSHs(sv_2mortal(newSVpv(pool_id2str(pool, modules[i]), 0)));
 	  }
 
+void 
+getidcounts(BSSolv::pool pool)
+    PPCODE:
+	{
+	  unsigned int nstrings = 0, nrels = 0;
+#ifdef POOL_FLAG_NOWHATPROVIDESSHRINK
+	  pool_get_idcounts(pool, &nstrings, &nrels);
+#endif
+	  XPUSHs(sv_2mortal(newSVuv((UV)nstrings)));
+	  XPUSHs(sv_2mortal(newSVuv((UV)nrels)));
+	}
+
+void
+presizeidhashes(BSSolv::pool pool, unsigned int nstrings, unsigned int nrels)
+    CODE:
+#ifdef POOL_FLAG_NOWHATPROVIDESSHRINK
+	pool_presize_idhashes(pool, nstrings, nrels);
+#endif
+
 void
 DESTROY(BSSolv::pool pool)
     CODE:
