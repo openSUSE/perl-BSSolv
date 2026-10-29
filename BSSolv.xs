@@ -7276,7 +7276,11 @@ pkg2srcname(BSSolv::pool pool, int p)
 	if (solvable_lookup_void(pool->solvables + p, SOLVABLE_SOURCENAME))
 	  RETVAL = pool_id2str(pool, pool->solvables[p].name);
 	else
-	  RETVAL = solvable_lookup_str(pool->solvables + p, SOLVABLE_SOURCENAME);
+	  {
+	    RETVAL = solvable_lookup_str(pool->solvables + p, SOLVABLE_SOURCENAME);
+	    if ((!RETVAL || !RETVAL[0]) && pool->solvables[p].arch != ARCH_SRC && pool->solvables[p].arch != ARCH_NOSRC)
+	      RETVAL = pool_id2str(pool, pool->solvables[p].name);
+	  }
     OUTPUT:
 	RETVAL
 
